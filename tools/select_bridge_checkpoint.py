@@ -21,6 +21,12 @@ def parse_log(path):
     raise ValueError(f'No structural defects metric row found in {path}')
 
 
+def parse_metrics_json(path):
+    report = json.loads(path.read_text(encoding='utf-8'))
+    metrics = report['results_percent']['structural defects']
+    return {name: float(metrics[name]) for name in METRICS}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--validation_root', type=Path, required=True)
@@ -33,10 +39,16 @@ def main():
     epochs = []
     for epoch_dir in sorted(args.validation_root.glob('epoch_*'), key=lambda p: int(p.name.split('_')[-1])):
         epoch = int(epoch_dir.name.split('_')[-1])
-        logs = sorted(epoch_dir.glob(f'bridge2893_*seed_{args.k_shots}shot_test_log.txt'))
-        if not logs:
-            raise ValueError(f'No validation logs found in {epoch_dir}')
-        runs = [parse_log(log) for log in logs]
+        metric_files = sorted(epoch_dir.glob(f'bridge2893_*seed_{args.k_shots}shot_metrics.json'))
+        if metric_files:
+            runs = [parse_metrics_json(path) for path in metric_files]
+            metric_source = 'full_precision_json'
+        else:
+            logs = sorted(epoch_dir.glob(f'bridge2893_*seed_{args.k_shots}shot_test_log.txt'))
+            if not logs:
+                raise ValueError(f'No validation metrics found in {epoch_dir}')
+            runs = [parse_log(log) for log in logs]
+            metric_source = 'rounded_log_fallback'
         summary = {
             metric: {
                 'mean': float(np.mean([run[metric] for run in runs])),
@@ -44,7 +56,12 @@ def main():
             }
             for metric in METRICS
         }
-        epochs.append({'epoch': epoch, 'runs': runs, 'summary': summary})
+        epochs.append({
+            'epoch': epoch,
+            'metric_source': metric_source,
+            'runs': runs,
+            'summary': summary,
+        })
 
     best = max(epochs, key=lambda item: (item['summary']['P-AP']['mean'], item['summary']['I-AUROC']['mean']))
     report = {
