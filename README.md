@@ -110,6 +110,11 @@ excluded from the default Bridge2893 run because the upstream implementation
 rescans all background pixels once per connected region and is not tractable
 at this dataset scale.
 
+Each experiment is stored in a separate self-contained directory under
+`results/`. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) and initialize the
+next version with `scripts/init_experiment.sh` after committing and pushing its
+code.
+
 ## Citation
 If you find this work useful in your research, please consider citing:
 ```
