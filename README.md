@@ -89,6 +89,24 @@ Here, we emphasize that AUPR is better for anomaly segmentation, where the imbal
 
 Note: F means Frozen Parameters (M) and L means Learnable Parameters (M)
 
+## Bridge2893 baseline
+
+This fork supports split-specific `meta.json` files such as
+`Bridge2893_split_seed42/{train,val,test}/meta.json`. Few-shot image prompts
+are sampled deterministically from normal images only.
+
+Run the official MVTec-trained checkpoint as a zero-shot Bridge2893 baseline:
+
+```bash
+conda activate adaptclip
+bash scripts/test_bridge2893.sh
+```
+
+The dataset root, checkpoint, output directory, GPU, and shot list can be
+overridden with `BRIDGE2893_ROOT`, `CHECKPOINT`, `SAVE_DIR`, `DEVICE`, and
+`SHOTS`. Pixel metrics use fixed threshold grids (2048 bins, 256 for AUPRO)
+to avoid sorting hundreds of millions of 518x518 pixel predictions.
+
 ## Citation
 If you find this work useful in your research, please consider citing:
 ```

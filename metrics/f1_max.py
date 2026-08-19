@@ -64,10 +64,10 @@ class F1Max(Metric):
 
     full_state_update: bool = False
 
-    def __init__(self, **kwargs) -> None:
+    def __init__(self, thresholds=None, **kwargs) -> None:
         super().__init__(**kwargs)
 
-        self.precision_recall_curve = BinaryPrecisionRecallCurve()
+        self.precision_recall_curve = BinaryPrecisionRecallCurve(thresholds=thresholds)
 
         self.threshold: torch.Tensor
 

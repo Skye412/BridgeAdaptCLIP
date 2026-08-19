@@ -185,11 +185,21 @@ def test(args):
 
 
     # ====================== Initialize Evaluation Metrics ======================
-    cpu_eva = False
+    cpu_eva = args.cpu_eval
     if cpu_eva:
-        evaluator = Evaluator('cpu', metrics=eval_metrics, sample_level=sample_level)
+        evaluator = Evaluator(
+            'cpu', metrics=eval_metrics, sample_level=sample_level,
+            pixel_thresholds=args.pixel_thresholds, pro_thresholds=args.pro_thresholds,
+        )
     else:
-        evaluator = Evaluator(device, metrics=eval_metrics, sample_level=sample_level)
+        evaluator = Evaluator(
+            device, metrics=eval_metrics, sample_level=sample_level,
+            pixel_thresholds=args.pixel_thresholds, pro_thresholds=args.pro_thresholds,
+        )
+    logger.info(
+        f'Evaluation device: {"cpu" if cpu_eva else device}; '
+        f'pixel thresholds: {args.pixel_thresholds}; PRO thresholds: {args.pro_thresholds}'
+    )
 
     # ======================Text Encoder forward ======================
     textual_learner.prepare_static_text_feature(model)
@@ -383,6 +393,9 @@ if __name__ == '__main__':
     parser.add_argument("--pq_mid_dim", type=int, default=128, help="the number of the first hidden layer in pqadapter")
     parser.add_argument("--pq_context", action="store_true", help="Enable context feature")
     parser.add_argument("--class_name", type=str, help="class name for a special dataset, for example, bottle in MVTec")
+    parser.add_argument("--cpu_eval", action="store_true", help="store predictions and compute metrics on CPU")
+    parser.add_argument("--pixel_thresholds", type=int, default=2048, help="threshold bins for pixel AUROC/AP/F1max")
+    parser.add_argument("--pro_thresholds", type=int, default=256, help="threshold bins for pixel AUPRO")
     args = parser.parse_args()
     print(args)
     setup_seed(args.seed)

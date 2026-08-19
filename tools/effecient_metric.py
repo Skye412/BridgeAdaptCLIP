@@ -16,7 +16,7 @@ class Evaluator:
         metrics: List of metric names to compute. If empty, uses default metrics.
     """
 
-    def __init__(self, device, metrics=None, sample_level=False):
+    def __init__(self, device, metrics=None, sample_level=False, pixel_thresholds=2048, pro_thresholds=256):
         if metrics is None or len(metrics) == 0:
             self.metrics = [
                 'I-AUROC', 'I-AP', 'I-F1max',
@@ -29,6 +29,10 @@ class Evaluator:
         self.aupro = AUPRO().to(device)
         self.auroc = AUROC().to(device)
         self.f1max = F1Max().to(device)
+        self.pixel_aupr = AUPR(thresholds=pixel_thresholds).to(device)
+        self.pixel_aupro = AUPRO(num_thresholds=pro_thresholds).to(device)
+        self.pixel_auroc = AUROC(thresholds=pixel_thresholds).to(device)
+        self.pixel_f1max = F1Max(thresholds=pixel_thresholds).to(device)
         self.overkill_escape_2 = OverkillEscape(escape_rate=2).to(device)
         self.overkill_escape_5 = OverkillEscape(escape_rate=5).to(device)
         self.overkill_escape_10 = OverkillEscape(escape_rate=10).to(device)
@@ -78,7 +82,7 @@ class Evaluator:
                 eval_results[metric] = self.auroc(pr_sp, gt_sp).item()
 
             elif metric.startswith('P-AUROC'):
-                eval_results[metric] = self.auroc(pr_px.ravel(), gt_px.ravel()).item()
+                eval_results[metric] = self.pixel_auroc(pr_px.ravel(), gt_px.ravel()).item()
 
             elif metric.startswith('S-AP'):
                 eval_results[metric] = self.aupr(pr_s, gt_s).item()
@@ -87,7 +91,7 @@ class Evaluator:
                 eval_results[metric] = self.aupr(pr_sp, gt_sp).item()
 
             elif metric.startswith('P-AP'):
-                eval_results[metric] = self.aupr(pr_px.ravel(), gt_px.ravel()).item()
+                eval_results[metric] = self.pixel_aupr(pr_px.ravel(), gt_px.ravel()).item()
 
             elif metric.startswith('S-F1max'):
                 eval_results[metric] = self.f1max(pr_s, gt_s).item()
@@ -96,10 +100,10 @@ class Evaluator:
                 eval_results[metric] = self.f1max(pr_sp, gt_sp).item()
 
             elif metric.startswith('P-F1max'):
-                eval_results[metric] = self.f1max(pr_px.ravel(), gt_px.ravel()).item()
+                eval_results[metric] = self.pixel_f1max(pr_px.ravel(), gt_px.ravel()).item()
 
             elif metric.startswith('P-AUPRO'):
-                eval_results[metric] = self.aupro(pr_px, gt_px).item()
+                eval_results[metric] = self.pixel_aupro(pr_px, gt_px).item()
 
             elif metric.startswith('I-Overkill@2'):
                 eval_results[metric] = self.overkill_escape_2(pr_sp, gt_sp).item()
