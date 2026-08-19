@@ -32,6 +32,7 @@ for shot in ${shots}; do
             --textual_learner \
             --pq_learner \
             --pq_context \
+            --eval_metrics I-AUROC I-AP I-F1max P-AUROC P-AP P-F1max \
             --cpu_eval \
             --pixel_thresholds 2048 \
             --pro_thresholds 256

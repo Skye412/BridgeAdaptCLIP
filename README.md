@@ -104,8 +104,11 @@ bash scripts/test_bridge2893.sh
 
 The dataset root, checkpoint, output directory, GPU, and shot list can be
 overridden with `BRIDGE2893_ROOT`, `CHECKPOINT`, `SAVE_DIR`, `DEVICE`, and
-`SHOTS`. Pixel metrics use fixed threshold grids (2048 bins, 256 for AUPRO)
-to avoid sorting hundreds of millions of 518x518 pixel predictions.
+`SHOTS`. Pixel AUROC, AP, and F1max use one-pass fixed histograms (2048 bins)
+to avoid sorting hundreds of millions of 518x518 pixel predictions. AUPRO is
+excluded from the default Bridge2893 run because the upstream implementation
+rescans all background pixels once per connected region and is not tractable
+at this dataset scale.
 
 ## Citation
 If you find this work useful in your research, please consider citing:
