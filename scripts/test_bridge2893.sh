@@ -34,6 +34,7 @@ for shot in ${shots}; do
             --pq_context \
             --eval_metrics I-AUROC I-AP I-F1max P-AUROC P-AP P-F1max \
             --cpu_eval \
+            --bridge_class_metrics \
             --pixel_thresholds 2048 \
             --pro_thresholds 256
     done

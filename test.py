@@ -1,6 +1,7 @@
 """Testing script for AdaptCLIP anomaly detection model."""
 
 import argparse
+import os
 import pickle
 import random
 from collections import defaultdict
@@ -16,6 +17,7 @@ import adaptcliplib
 from adaptcliplib import PQAdapter, TextualAdapter, VisualAdapter, fusion_fun
 from dataset import Dataset, PromptDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed, visualizer
+from tools.bridge_class_metrics import evaluate_bridge_classes
 
 
 def prompt_association(image_memory, patch_memory, target_class_name):
@@ -343,6 +345,23 @@ def test(args):
     results_eval = dict(sample_ids=sample_ids, gt_masks=gt_masks, pr_masks=pr_masks, cls_names=cls_names, gt_anomalys=gt_anomalys, pr_anomalys=pr_anomalys, query_paths=query_paths)
     results_eval = {k: np.concatenate(v, axis=0) if k in ['cls_names', 'query_paths', 'sample_ids']  else torch.cat(v, dim=0) for k, v in results_eval.items()}
 
+    if args.bridge_class_metrics:
+        class_report_path = os.path.join(save_path, 'bridge_defect_metrics.json')
+        class_report = evaluate_bridge_classes(
+            results_eval['query_paths'], results_eval['pr_anomalys'], results_eval['pr_masks'],
+            args.pixel_thresholds, class_report_path,
+        )
+        logger.info('\nPer-defect one-vs-normal metrics (other defect pixels ignored):')
+        for defect_name, defect_result in class_report.items():
+            metrics = defect_result['metrics_percent']
+            support = defect_result['support']
+            logger.info(
+                f'{defect_name}: positives={support["positive_images"]}, '
+                f'I-AUROC={metrics["I-AUROC"]:.1f}, I-AP={metrics["I-AP"]:.1f}, '
+                f'I-F1max={metrics["I-F1max"]:.1f}, P-AUROC={metrics["P-AUROC"]:.1f}, '
+                f'P-AP={metrics["P-AP"]:.1f}, P-F1max={metrics["P-F1max"]:.1f}'
+            )
+
 
     # save results
     msg = {}
@@ -396,6 +415,7 @@ if __name__ == '__main__':
     parser.add_argument("--cpu_eval", action="store_true", help="store predictions and compute metrics on CPU")
     parser.add_argument("--pixel_thresholds", type=int, default=2048, help="threshold bins for pixel AUROC/AP/F1max")
     parser.add_argument("--pro_thresholds", type=int, default=256, help="threshold bins for pixel AUPRO")
+    parser.add_argument("--bridge_class_metrics", action="store_true", help="report Bridge2893 metrics per defect color")
     args = parser.parse_args()
     print(args)
     setup_seed(args.seed)

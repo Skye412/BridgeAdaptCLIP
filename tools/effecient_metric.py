@@ -150,6 +150,11 @@ class Evaluator:
                 bins[~target_chunk], minlength=num_thresholds
             ).to(torch.float64)
 
+        return Evaluator._metrics_from_histograms(positive_hist, negative_hist)
+
+    @staticmethod
+    def _metrics_from_histograms(positive_hist, negative_hist):
+        """Derive AUROC, AP, and F1max from positive/negative histograms."""
         true_positive = positive_hist.flip(0).cumsum(0)
         false_positive = negative_hist.flip(0).cumsum(0)
         positive_count = positive_hist.sum().clamp_min(1)
