@@ -19,10 +19,10 @@ DEFECT_COLORS_BY_SOURCE = {
         'Efflorescence': (255, 255, 0),
     },
     'S2DS': {
-        'Crack': (255, 255, 255),
-        'Spalling': (255, 0, 0),
-        'Corrosion': (255, 255, 0),
-        'Efflorescence': (0, 255, 255),
+        'Crack': (255, 0, 0),
+        'Spalling': (0, 255, 0),
+        'Corrosion': (0, 0, 255),
+        'Efflorescence': (255, 255, 0),
     },
 }
 DEFECT_NAMES = tuple(DEFECT_COLORS_BY_SOURCE['CODEBRIM'])
