@@ -694,6 +694,18 @@ class VisualAdapter(nn.Module):
 
     def forward(self, image_features, patch_features, static_text_features):
 
+        static_text_probs, similarity_map, _ = self.forward_with_features(
+            image_features, patch_features, static_text_features
+        )
+        return static_text_probs, similarity_map
+
+    def forward_with_features(self, image_features, patch_features, static_text_features):
+        """Return the original outputs and the adapted spatial patch feature.
+
+        The existing ``forward`` contract remains unchanged. BridgeAdaptCLIP
+        uses the additional feature without altering Original AdaptCLIP runs.
+        """
+
         static_text_features = torch.stack(torch.chunk(static_text_features, dim = 0, chunks = 2), dim = 1)  # ?
         static_text_features = static_text_features/static_text_features.norm(dim=-1, keepdim=True)
 
@@ -709,7 +721,17 @@ class VisualAdapter(nn.Module):
         similarity, _ = compute_similarity(patch_feature, static_text_features[0])
         similarity_map = get_similarity_map(similarity[:, 1:, :], self.img_size).permute(0, 3, 1, 2)
 
-        return static_text_probs, similarity_map
+        spatial_tokens = patch_feature[:, 1:, :]
+        grid_size = int(spatial_tokens.shape[1] ** 0.5)
+        if grid_size * grid_size != spatial_tokens.shape[1]:
+            raise ValueError(
+                f'Patch token count {spatial_tokens.shape[1]} is not a square grid.'
+            )
+        spatial_feature = spatial_tokens.permute(0, 2, 1).reshape(
+            spatial_tokens.shape[0], spatial_tokens.shape[2], grid_size, grid_size
+        )
+
+        return static_text_probs, similarity_map, spatial_feature
 
 
 class PQAdapter(nn.Module):
@@ -844,11 +866,14 @@ def tokenize(texts: Union[str, List[str]], context_length: int = 77, truncate: b
 
 
 class TextualAdapter(nn.Module):
-    def __init__(self, clip_model, img_size, prompt_length):
+    def __init__(self, clip_model, img_size, prompt_length,
+                 static_normal_descriptions=None, static_anomaly_descriptions=None):
         super().__init__()
 
         self.img_size = img_size
         self.n_ctx = prompt_length
+        self.static_normal_descriptions = static_normal_descriptions
+        self.static_anomaly_descriptions = static_anomaly_descriptions
         n_ctx_pos = self.n_ctx
         n_ctx_neg = self.n_ctx
 
@@ -1002,6 +1027,10 @@ class TextualAdapter(nn.Module):
         return prompts, tokenized_prompts
 
     def prompt(self):
+        if self.static_normal_descriptions is not None or self.static_anomaly_descriptions is not None:
+            if not self.static_normal_descriptions or not self.static_anomaly_descriptions:
+                raise ValueError('Both normal and anomaly static descriptions are required.')
+            return list(self.static_normal_descriptions), list(self.static_anomaly_descriptions)
         norm_class_state = [ele.format('object') for ele in self.static_normal_list]
         normal_static_template = [class_template.format(ele) for ele in norm_class_state for class_template in self.template_list]
         abnormal_class_state = [ele.format('object') for ele in self.static_anomaly_list]
@@ -1011,11 +1040,12 @@ class TextualAdapter(nn.Module):
 
     def prepare_static_text_feature(self, model):
         normal_description, abnormal_description = self.prompt()
-        normal_tokens = tokenize(normal_description)
-        abnormal_tokens = tokenize(abnormal_description)
+        device = next(model.parameters()).device
+        normal_tokens = tokenize(normal_description).to(device)
+        abnormal_tokens = tokenize(abnormal_description).to(device)
         with torch.no_grad():
-            normal_text_features = model.encode_text(normal_tokens.cuda()).float()
-            abnormal_text_features = model.encode_text(abnormal_tokens.cuda()).float()
+            normal_text_features = model.encode_text(normal_tokens).float()
+            abnormal_text_features = model.encode_text(abnormal_tokens).float()
 
         avg_normal_text_features = torch.mean(normal_text_features, dim = 0, keepdim= True)
         avg_abnormal_text_features = torch.mean(abnormal_text_features, dim = 0, keepdim= True)

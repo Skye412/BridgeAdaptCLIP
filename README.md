@@ -115,6 +115,13 @@ Each experiment is stored in a separate self-contained directory under
 next version with `scripts/init_experiment.sh` after committing and pushing its
 code.
 
+## BridgeAdaptCLIP-v1
+
+The full zero-reference high-resolution structural refinement experiment is
+implemented in `train_bridgeadaptclip.py` and `test_bridgeadaptclip.py`. Its
+locked architecture, training contract, Protocol-v2 comparison, and execution
+command are documented in [docs/BRIDGEADAPTCLIP_V1.md](docs/BRIDGEADAPTCLIP_V1.md).
+
 ## Citation
 If you find this work useful in your research, please consider citing:
 ```
