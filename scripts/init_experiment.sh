@@ -28,7 +28,11 @@ git -C "${repo_root}" diff --binary main...HEAD > "${experiment_dir}/provenance/
 git -C "${repo_root}" log --oneline main..HEAD > "${experiment_dir}/provenance/iteration_commits.txt"
 
 if command -v conda >/dev/null 2>&1; then
-    conda env export > "${experiment_dir}/provenance/conda_environment.yml"
+    if [[ -n "${CONDA_ENV_NAME:-}" ]]; then
+        conda env export --name "${CONDA_ENV_NAME}" > "${experiment_dir}/provenance/conda_environment.yml"
+    else
+        conda env export > "${experiment_dir}/provenance/conda_environment.yml"
+    fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi -q > "${experiment_dir}/provenance/nvidia_smi.txt"

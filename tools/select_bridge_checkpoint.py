@@ -26,12 +26,14 @@ def main():
     parser.add_argument('--validation_root', type=Path, required=True)
     parser.add_argument('--checkpoint_root', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--k_shots', type=int, default=1)
+    parser.add_argument('--metric_resolution', type=int)
     args = parser.parse_args()
 
     epochs = []
     for epoch_dir in sorted(args.validation_root.glob('epoch_*'), key=lambda p: int(p.name.split('_')[-1])):
         epoch = int(epoch_dir.name.split('_')[-1])
-        logs = sorted(epoch_dir.glob('bridge2893_*seed_1shot_test_log.txt'))
+        logs = sorted(epoch_dir.glob(f'bridge2893_*seed_{args.k_shots}shot_test_log.txt'))
         if not logs:
             raise ValueError(f'No validation logs found in {epoch_dir}')
         runs = [parse_log(log) for log in logs]
@@ -46,8 +48,14 @@ def main():
 
     best = max(epochs, key=lambda item: (item['summary']['P-AP']['mean'], item['summary']['I-AUROC']['mean']))
     report = {
-        'selection_metric': 'mean validation P-AP over 1-shot seeds',
+        'selection_metric': (
+            'validation P-AP for 0-reference'
+            if args.k_shots == 0
+            else f'mean validation P-AP over {args.k_shots}-reference seeds'
+        ),
         'tie_breaker': 'mean validation I-AUROC',
+        'k_shots': args.k_shots,
+        'metric_resolution': args.metric_resolution,
         'best_epoch': best['epoch'],
         'best_checkpoint': str(args.checkpoint_root / f"epoch_{best['epoch']}.pth"),
         'best_summary': best['summary'],

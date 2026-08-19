@@ -1,0 +1,30 @@
+{
+  "protocol_id": "bridge2893-eval-v2",
+  "model_input_size": 518,
+  "metric_resolution": 1024,
+  "gt_source": "original_frozen_1024_png_raster",
+  "gt_resize": "forbidden",
+  "prediction_resize": {
+    "mode": "bilinear",
+    "align_corners": false
+  },
+  "row0": {
+    "reference_count": 0,
+    "checkpoint_selection": "maximum_validation_P-AP",
+    "checkpoint_tie_breaker": "validation_I-AUROC",
+    "test_runs_after_selection": 1
+  },
+  "few_reference": {
+    "normal_parent_prompt_pool_percent": 35,
+    "normal_parent_query_pool_percent": 65,
+    "prompt_query_parent_overlap": 0,
+    "pool_manifest_status": "required_p1_artifact_not_yet_present_in_dataset_snapshot",
+    "comparison_rule": "zero-reference and few-reference use the same Query-Pool"
+  },
+  "pixel_metrics": {
+    "score_type": "floating_point_anomaly_score",
+    "pre_metric_binarization": false,
+    "curve_histogram_bins": 2048,
+    "F1max": "oracle maximum over thresholds on each evaluation set"
+  }
+}
