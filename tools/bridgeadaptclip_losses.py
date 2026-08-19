@@ -12,7 +12,9 @@ class BinaryFocalLossWithLogits(nn.Module):
         self.gamma = gamma
 
     def forward(self, logits, targets):
-        targets = targets.to(dtype=logits.dtype)
+        # Native-1024 reductions and elementwise losses must remain FP32 under AMP.
+        logits = logits.float()
+        targets = targets.float()
         ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
         probabilities = torch.sigmoid(logits)
         p_t = probabilities * targets + (1.0 - probabilities) * (1.0 - targets)
@@ -26,8 +28,9 @@ class BinaryDiceLossWithLogits(nn.Module):
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        probabilities = torch.sigmoid(logits).flatten(1)
-        targets = targets.to(dtype=probabilities.dtype).flatten(1)
+        # A 1024x1024 FP16 sum can overflow even for probabilities near 0.5.
+        probabilities = torch.sigmoid(logits.float()).flatten(1)
+        targets = targets.float().flatten(1)
         intersection = (probabilities * targets).sum(dim=1)
         denominator = probabilities.sum(dim=1) + targets.sum(dim=1)
         dice = (2.0 * intersection + self.smooth) / (denominator + self.smooth)

@@ -19,12 +19,14 @@
   "edge_gate": true,
   "direction_embedding": false,
   "srf_residual": "(1 + alpha_s) * F0_up",
-  "optimizer": "AdamW",
+  "srf_attention_initialization": "weight=0,bias=-4",
+  "optimizer": "Adam",
+  "optimizer_betas": [0.5, 0.999],
   "adapter_learning_rate": 0.001,
   "new_module_learning_rate": 0.001,
-  "weight_decay": 0.01,
-  "physical_batch_size": 2,
-  "gradient_accumulation_steps": 4,
+  "weight_decay": 0.0,
+  "physical_batch_size": 4,
+  "gradient_accumulation_steps": 2,
   "effective_batch_size": 8,
   "max_epochs": 15,
   "train_seed": 10,
@@ -33,7 +35,8 @@
     "pixel_focal_weight": 1.0,
     "pixel_dice_weight": 1.0,
     "focal_positive_alpha": 0.75,
-    "focal_gamma": 2.0
+    "focal_gamma": 2.0,
+    "native_pixel_loss_precision": "float32"
   },
   "checkpoint_selection": "val_native1024_pixel_ap",
   "test_policy": "once_after_validation_selection"

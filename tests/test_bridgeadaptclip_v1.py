@@ -42,6 +42,11 @@ class BridgeAdaptCLIPV1Tests(unittest.TestCase):
         self.assertEqual(tuple(output['spatial_attention'].shape), (2, 1, 16, 16))
         self.assertTrue(torch.all(output['spatial_attention'] >= 0))
         self.assertTrue(torch.all(output['spatial_attention'] <= 1))
+        expected_initial_attention = torch.sigmoid(torch.tensor(-4.0))
+        self.assertTrue(torch.allclose(
+            output['spatial_attention'],
+            torch.full_like(output['spatial_attention'], expected_initial_attention),
+        ))
         expected = (1.0 + output['spatial_attention']) * output['semantic_up']
         self.assertTrue(torch.allclose(output['refined_semantic'], expected))
 
@@ -80,6 +85,18 @@ class BridgeAdaptCLIPV1Tests(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss))
         loss.backward()
         self.assertGreater(float(logits.grad.abs().sum()), 0.0)
+
+    def test_native_resolution_losses_reduce_in_float32_under_amp_inputs(self):
+        logits = torch.zeros(1, 1, 1024, 1024, dtype=torch.float16, requires_grad=True)
+        targets = torch.ones_like(logits)
+        focal = BinaryFocalLossWithLogits(alpha=0.75, gamma=2.0)(logits, targets)
+        dice = BinaryDiceLossWithLogits()(logits, targets)
+        self.assertEqual(focal.dtype, torch.float32)
+        self.assertEqual(dice.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(focal))
+        self.assertTrue(torch.isfinite(dice))
+        (focal + dice).backward()
+        self.assertTrue(torch.isfinite(logits.grad).all())
 
 
 if __name__ == '__main__':

@@ -98,6 +98,8 @@ class BridgeAdaptCLIPV1(nn.Module):
         self.degconv_lite = DEGConvLite(structural_channels, strip_kernel)
 
         self.spatial_attention = nn.Conv2d(structural_channels, 1, kernel_size=1)
+        nn.init.zeros_(self.spatial_attention.weight)
+        nn.init.constant_(self.spatial_attention.bias, -4.0)
         self.fusion_projection = ConvNormAct(
             fusion_channels + structural_channels, fusion_channels, kernel_size=3
         )

@@ -73,10 +73,10 @@ def train(args):
 
     adapter_parameters = list(textual_learner.parameters()) + list(visual_learner.parameters())
     new_module_parameters = list(bridge_model.parameters())
-    optimizer = torch.optim.AdamW([
+    optimizer = torch.optim.Adam([
         {'params': adapter_parameters, 'lr': args.adapter_learning_rate},
         {'params': new_module_parameters, 'lr': args.new_module_learning_rate},
-    ], weight_decay=args.weight_decay)
+    ], betas=(0.5, 0.999))
 
     focal_loss = BinaryFocalLossWithLogits(alpha=args.focal_alpha, gamma=args.focal_gamma)
     dice_loss = BinaryDiceLossWithLogits()
@@ -198,6 +198,7 @@ def train(args):
                 'edge_gate': True,
                 'direction_embedding': False,
                 'srf_residual_formula': '(1 + alpha_s) * F0_up',
+                'srf_attention_initialization': 'weight=0,bias=-4',
                 'normal_anchor': BRIDGE_NORMAL_ANCHORS[0],
                 'anomaly_anchor': BRIDGE_ANOMALY_ANCHORS[0],
             },
@@ -209,11 +210,20 @@ def train(args):
 
     metadata = {
         'completed_epochs': epoch,
-        'optimizer': 'AdamW',
+        'optimizer': 'Adam',
+        'optimizer_betas': [0.5, 0.999],
+        'weight_decay': 0.0,
+        'physical_batch_size': args.physical_batch_size,
+        'gradient_accumulation_steps': args.gradient_accumulation_steps,
         'effective_batch_size': args.effective_batch_size,
         'loss_weights': {'image_ce': 1.0, 'pixel_focal': 1.0, 'pixel_dice': 1.0},
         'focal_alpha_positive': args.focal_alpha,
         'focal_gamma': args.focal_gamma,
+        'native_pixel_losses_fp32': True,
+        'batch_norm_observation': (
+            'VisualAdapter BatchNorm statistics use the physical batch; '
+            'gradient accumulation only preserves the effective gradient batch.'
+        ),
         'clip_backbone_frozen': True,
         'prompt_query_adapter_used': False,
     }
@@ -235,12 +245,11 @@ def build_parser():
     parser.add_argument('--structural_channels', type=int, default=128)
     parser.add_argument('--strip_kernel', type=int, default=5)
     parser.add_argument('--epochs', type=int, default=15)
-    parser.add_argument('--physical_batch_size', type=int, default=2)
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=4)
+    parser.add_argument('--physical_batch_size', type=int, default=4)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=2)
     parser.add_argument('--effective_batch_size', type=int, default=8)
     parser.add_argument('--adapter_learning_rate', type=float, default=1e-3)
     parser.add_argument('--new_module_learning_rate', type=float, default=1e-3)
-    parser.add_argument('--weight_decay', type=float, default=1e-2)
     parser.add_argument('--focal_alpha', type=float, default=0.75)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
     parser.add_argument('--seed', type=int, default=10)

@@ -54,6 +54,10 @@ F0_refined = (1 + alpha_s) * bilinear_upsample(F0, 256, 256)
 F_fusion = projection(concat(F0_refined, F_high))
 ```
 
+The spatial-attention convolution starts with zero weights and bias -4, so the
+initial refinement multiplier is approximately 1.018 instead of 1.5. This is a
+near-identity initialization, not an additional module.
+
 The lightweight decoder uses two bilinear x2 stages with convolutional
 refinement and produces one 1024 x 1024 binary anomaly logit map.
 
@@ -62,11 +66,17 @@ refinement and produces one 1024 x 1024 binary anomaly logit map.
 - Train/val/test: frozen Bridge2893 seed-42 parent-isolated splits.
 - Initialization: same frozen CLIP starting point as Row 0; do not initialize
   adapters from the trained Row 0 checkpoint.
-- Effective batch size: 8 (physical 2 x gradient accumulation 4 by default).
-- Optimizer: AdamW, adapter LR 1e-3, new-module LR 1e-3, weight decay 1e-2.
+- Effective batch size: 8 (physical 4 x gradient accumulation 2). Physical
+  batch 8 was measured to exceed the 16 GB V100 memory limit. VisualAdapter
+  BatchNorm therefore observes 4 samples per forward pass; accumulation does
+  not make its running statistics identical to Row 0 batch 8.
+- Optimizer: Row 0-matched Adam, betas (0.5, 0.999), adapter LR 1e-3,
+  new-module LR 1e-3, no weight decay.
 - Loss: mean Visual/Textual image CE + binary focal logits loss + binary Dice
   logits loss, weights 1:1:1.
 - Focal positive alpha: 0.75; gamma: 2.
+- Native-1024 Focal and Dice computations, especially spatial reductions, are
+  forced to FP32 under AMP.
 - Maximum epochs: 15; seed: 10; AMP enabled by the official script.
 
 ## Evaluation contract
@@ -100,3 +110,9 @@ test.
   only to large-area defects.
 
 No BridgeAdaptCLIP-v1 result is claimed in this document before execution.
+
+The Full-v1 loss pathway is intentionally not identical to Row 0: Visual and
+Textual local maps receive decoder-mediated pixel gradients, while the new
+native-1024 decoder is supervised directly. Consequently, a Full-v1 gain tests
+the complete high-resolution design but cannot be attributed to DEGConv-lite
+or SRF alone; the planned controls/ablations remain required.
