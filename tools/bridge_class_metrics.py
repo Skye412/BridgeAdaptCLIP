@@ -11,12 +11,21 @@ from sklearn.metrics import average_precision_score, precision_recall_curve, roc
 from .effecient_metric import Evaluator
 
 
-DEFECT_COLORS = {
-    'Crack': (255, 255, 255),
-    'Spalling': (255, 0, 0),
-    'Corrosion': (255, 255, 0),
-    'Efflorescence': (0, 255, 255),
+DEFECT_COLORS_BY_SOURCE = {
+    'CODEBRIM': {
+        'Crack': (255, 0, 0),
+        'Spalling': (0, 255, 0),
+        'Corrosion': (0, 0, 255),
+        'Efflorescence': (255, 255, 0),
+    },
+    'S2DS': {
+        'Crack': (255, 255, 255),
+        'Spalling': (255, 0, 0),
+        'Corrosion': (255, 255, 0),
+        'Efflorescence': (0, 255, 255),
+    },
 }
+DEFECT_NAMES = tuple(DEFECT_COLORS_BY_SOURCE['CODEBRIM'])
 
 
 def _resize_mask(mask, shape):
@@ -50,7 +59,7 @@ def evaluate_bridge_classes(query_paths, image_scores, pixel_scores, num_thresho
             'normal_images': 0,
             'ignored_pixels': 0,
         }
-        for name in DEFECT_COLORS
+        for name in DEFECT_NAMES
     }
 
     for image_path, image_score, pixel_score in zip(query_paths, image_scores, pixel_scores):
@@ -72,9 +81,11 @@ def evaluate_bridge_classes(query_paths, image_scores, pixel_scores, num_thresho
 
         mask_path = os.path.splitext(image_path)[0] + '.png'
         rgb_mask = np.asarray(Image.open(mask_path).convert('RGB'))
+        source = 'CODEBRIM' if os.path.basename(image_path).startswith('codebrim_') else 'S2DS'
+        defect_colors = DEFECT_COLORS_BY_SOURCE[source]
         class_masks = {
             name: np.all(rgb_mask == np.asarray(color, dtype=np.uint8), axis=-1)
-            for name, color in DEFECT_COLORS.items()
+            for name, color in defect_colors.items()
         }
         any_defect = np.logical_or.reduce(list(class_masks.values()))
 
