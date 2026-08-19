@@ -27,11 +27,15 @@ git -C "${repo_root}" diff --binary > "${experiment_dir}/provenance/worktree.pat
 git -C "${repo_root}" diff --binary main...HEAD > "${experiment_dir}/provenance/iteration_changes.patch"
 git -C "${repo_root}" log --oneline main..HEAD > "${experiment_dir}/provenance/iteration_commits.txt"
 
-if command -v conda >/dev/null 2>&1; then
+conda_bin="${CONDA_BIN:-$(command -v conda || true)}"
+if [[ -z "${conda_bin}" && -x /home/skye/miniconda3/bin/conda ]]; then
+    conda_bin=/home/skye/miniconda3/bin/conda
+fi
+if [[ -n "${conda_bin}" ]]; then
     if [[ -n "${CONDA_ENV_NAME:-}" ]]; then
-        conda env export --name "${CONDA_ENV_NAME}" > "${experiment_dir}/provenance/conda_environment.yml"
+        "${conda_bin}" env export --name "${CONDA_ENV_NAME}" > "${experiment_dir}/provenance/conda_environment.yml"
     else
-        conda env export > "${experiment_dir}/provenance/conda_environment.yml"
+        "${conda_bin}" env export > "${experiment_dir}/provenance/conda_environment.yml"
     fi
 fi
 if command -v nvidia-smi >/dev/null 2>&1; then
