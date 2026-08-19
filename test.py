@@ -346,7 +346,9 @@ def test(args):
     results_eval = {k: np.concatenate(v, axis=0) if k in ['cls_names', 'query_paths', 'sample_ids']  else torch.cat(v, dim=0) for k, v in results_eval.items()}
 
     if args.bridge_class_metrics:
-        class_report_path = os.path.join(save_path, 'bridge_defect_metrics.json')
+        class_report_path = os.path.join(
+            save_path, f'bridge_defect_metrics_{seed}seed_{k_shots}shot.json'
+        )
         class_report = evaluate_bridge_classes(
             results_eval['query_paths'], results_eval['pr_anomalys'], results_eval['pr_masks'],
             args.pixel_thresholds, class_report_path,
