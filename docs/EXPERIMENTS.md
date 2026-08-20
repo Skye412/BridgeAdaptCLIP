@@ -76,3 +76,10 @@ The earlier v004 experiment remains a valid historical result but is legacy:
 its metric resolution is 518 and its checkpoint was selected with one-reference
 validation. Its overlapping one-reference support/query result is diagnostic
 only and must not be used in a publication table.
+# BridgeAdaptCLIP-v1.1
+
+The next formal run is **Frozen Semantic Base + Spatially Gated Structural
+Residual**. See `docs/BRIDGEADAPTCLIP_V11.md` and
+`configs/bridgeadaptclip_v11.json`. It must load the formal Row-0 Epoch 14
+checkpoint, preserve the exact Row-0 image output, select by validation
+native-1024 P-AP, and evaluate test once.
