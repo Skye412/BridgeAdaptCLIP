@@ -49,6 +49,12 @@ class BridgeDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(fusion_grid()), 22)
         self.assertEqual(bridge_source_from_path('/x/codebrim_a.jpg'), 'CODEBRIM')
         self.assertEqual(bridge_source_from_path('/x/s2ds_a.jpg'), 'S2DS')
+        self.assertEqual(
+            bridge_source_from_path(
+                '/x/normal_00003.jpg', {'normal_00003': 'CODEBRIM'}
+            ),
+            'CODEBRIM',
+        )
 
 
 if __name__ == '__main__':

@@ -35,12 +35,15 @@ def select_validation_fusion(candidates):
     )[1]
 
 
-def bridge_source_from_path(path):
+def bridge_source_from_path(path, source_by_sample=None):
     name = os.path.basename(str(path)).lower()
     if name.startswith('codebrim_'):
         return 'CODEBRIM'
     if name.startswith('s2ds_'):
         return 'S2DS'
+    sample = os.path.splitext(name)[0]
+    if source_by_sample and sample in source_by_sample:
+        return source_by_sample[sample]
     raise ValueError(f'Cannot infer Bridge2893 source from {path}')
 
 

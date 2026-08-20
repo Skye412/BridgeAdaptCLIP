@@ -1,6 +1,7 @@
 """Run the three locked zero-cost BridgeAdaptCLIP-v1 diagnostics."""
 
 import argparse
+import csv
 import json
 import os
 
@@ -257,6 +258,18 @@ def collect_predictions(args):
         paths.extend(items['img_path'])
         sample_ids.extend(items['sample_id'])
 
+    split_name = os.path.basename(os.path.normpath(args.data_path))
+    manifest_path = os.path.join(
+        os.path.dirname(os.path.normpath(args.data_path)), f'{split_name}_manifest.csv'
+    )
+    with open(manifest_path, 'r', encoding='utf-8') as manifest_file:
+        source_by_sample = {
+            row['sample'].lower(): row['source']
+            for row in csv.DictReader(manifest_file)
+        }
+    sources = np.asarray([
+        bridge_source_from_path(path, source_by_sample) for path in paths
+    ])
     return {
         'predictions': {key: torch.cat(value) for key, value in predictions.items()},
         'image_scores': {key: torch.cat(value) for key, value in image_scores.items()},
@@ -264,10 +277,12 @@ def collect_predictions(args):
         'image_targets': torch.cat(image_targets),
         'paths': np.asarray(paths),
         'sample_ids': np.asarray(sample_ids),
+        'sources': sources,
+        'source_manifest': manifest_path,
     }
 
 
-def _pixel_composition(paths):
+def _pixel_composition(paths, sources):
     report = {
         key: {
             'images': 0, 'normal_images': 0, 'defect_images': 0,
@@ -279,8 +294,7 @@ def _pixel_composition(paths):
         }
         for key in ('ALL', 'CODEBRIM', 'S2DS')
     }
-    for path in paths:
-        source = bridge_source_from_path(path)
+    for path, source in zip(paths, sources):
         is_normal = os.path.basename(os.path.dirname(path)) == 'normal'
         for key in ('ALL', source):
             report[key]['images'] += 1
@@ -307,7 +321,7 @@ def _pixel_composition(paths):
 
 def _evaluate_streams(data, streams, output_dir, num_thresholds):
     report = {}
-    sources = np.asarray([bridge_source_from_path(path) for path in data['paths']])
+    sources = data['sources']
     for name, prediction in streams.items():
         scores = data['image_scores'].get(name, data['image_scores'][STREAM_ROW0])
         stream_report = {
@@ -378,7 +392,8 @@ def run(args):
             'metric_resolution': args.metric_resolution,
         },
         'reproduction_checks': reproduction,
-        'pixel_composition': _pixel_composition(data['paths']),
+        'source_manifest': data['source_manifest'],
+        'pixel_composition': _pixel_composition(data['paths'], data['sources']),
         'streams': base_report,
     }
 

@@ -38,6 +38,10 @@ Validation and test reports include:
 - per-source normal/defect counts, class-positive image counts, defect pixels,
   and each class fraction of defect pixels.
 
+Source identity is read from the frozen `val_manifest.csv` and
+`test_manifest.csv`. This is required for normalized `normal_XXXXX.jpg` names,
+whose source cannot be inferred from the filename.
+
 Before accepting a report, the script requires the freshly inferred Row 0 and
 Full-v1 decoder P-AP to reproduce the existing official value within 0.10
 absolute point on both validation and test.
