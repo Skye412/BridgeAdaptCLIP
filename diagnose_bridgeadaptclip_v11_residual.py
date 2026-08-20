@@ -67,7 +67,7 @@ def diagnose(args):
 
     bridge_class = (
         BridgeAdaptCLIPV12
-        if args.checkpoint_state_key == 'bridgeadaptclip_v12'
+        if args.checkpoint_state_key in ('bridgeadaptclip_v12', 'bridgeadaptclip_v13')
         else BridgeAdaptCLIPV11
     )
     bridge_model = bridge_class(
@@ -211,7 +211,9 @@ def diagnose(args):
     correct_region = region_report.get('row0_correct_E_lt_0.5')
     report = {
         'protocol': {
-            'diagnostic': 'BridgeAdaptCLIP-v1.1 gated residual spatial statistics',
+            'diagnostic': (
+                f'{args.checkpoint_state_key} gated residual spatial statistics'
+            ),
             'training_performed': False,
             'split': args.split_name,
             'decision_split': args.decision_split,

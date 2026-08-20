@@ -15,6 +15,7 @@ from tools import get_logger, get_transform, setup_seed
 from tools.bridge_row0 import file_sha256, resize_row0_probability, smooth_row0_probability
 from tools.bridgeadaptclip_losses import BinaryDiceLossWithLogits, BinaryFocalLossWithLogits
 from tools.bridgeadaptclip_v12_losses import error_aware_gate_losses
+from tools.bridgeadaptclip_v13_losses import signed_error_correction_loss
 
 
 def _freeze(module):
@@ -29,9 +30,10 @@ def train(args):
             'physical_batch_size * gradient_accumulation_steps must equal effective_batch_size'
         )
     os.makedirs(args.save_path, exist_ok=True)
+    model_slug = args.model_name.lower().replace('-', '').replace('.', '')
     logger = get_logger(
         args.save_path,
-        f'bridge2893_{args.seed}seed_0shot_bridgeadaptclip_v11_train_log.txt',
+        f'bridge2893_{args.seed}seed_0shot_{model_slug}_train_log.txt',
     )
     logger.info(args)
 
@@ -53,7 +55,7 @@ def train(args):
 
     bridge_class = (
         BridgeAdaptCLIPV12
-        if args.checkpoint_state_key == 'bridgeadaptclip_v12'
+        if args.checkpoint_state_key in ('bridgeadaptclip_v12', 'bridgeadaptclip_v13')
         else BridgeAdaptCLIPV11
     )
     bridge_model = bridge_class(
@@ -125,6 +127,8 @@ def train(args):
             'total': [], 'pixel_focal': [], 'pixel_dice': [],
             'gate_loss': [], 'preserve_loss': [],
             'weighted_gate_loss': [], 'weighted_preserve_loss': [],
+            'signed_correction_loss': [], 'signed_positive_loss': [],
+            'signed_negative_loss': [], 'weighted_signed_correction_loss': [],
             'residual_l1': [], 'mean_gate': [],
             'mean_abs_residual': [], 'mean_abs_correction': [],
         }
@@ -162,17 +166,24 @@ def train(args):
                 )
                 pixel_focal = focal_loss(output['mask_logits'], target_mask)
                 pixel_dice = dice_loss(output['mask_logits'], target_mask)
-                _, gate_loss, preserve_loss = error_aware_gate_losses(
+                gate_target, gate_loss, preserve_loss = error_aware_gate_losses(
                     output['gate_logits'], output['gated_residual'],
                     target_mask, row0_probability,
                 )
+                signed_loss, signed_positive, signed_negative = (
+                    signed_error_correction_loss(
+                        output['gated_residual'], target_mask, gate_target
+                    )
+                )
                 weighted_gate_loss = args.gate_loss_weight * gate_loss
                 weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
+                weighted_signed_loss = args.signed_correction_loss_weight * signed_loss
                 residual_l1 = output['gated_residual'].float().abs().mean()
                 total_loss = (
                     pixel_focal + pixel_dice
                     + args.residual_l1_weight * residual_l1
                     + weighted_gate_loss + weighted_preserve_loss
+                    + weighted_signed_loss
                 )
 
             scaler.scale(total_loss / args.gradient_accumulation_steps).backward()
@@ -191,6 +202,12 @@ def train(args):
             loss_records['weighted_preserve_loss'].append(
                 float(weighted_preserve_loss.detach())
             )
+            loss_records['signed_correction_loss'].append(float(signed_loss.detach()))
+            loss_records['signed_positive_loss'].append(float(signed_positive.detach()))
+            loss_records['signed_negative_loss'].append(float(signed_negative.detach()))
+            loss_records['weighted_signed_correction_loss'].append(
+                float(weighted_signed_loss.detach())
+            )
             loss_records['residual_l1'].append(float(residual_l1.detach()))
             loss_records['mean_gate'].append(float(output['gate'].float().mean().detach()))
             loss_records['mean_abs_residual'].append(
@@ -206,7 +223,9 @@ def train(args):
         logger.info(
             'epoch [%d/%d], total=%.6f, pixel_focal=%.6f, pixel_dice=%.6f, '
             'gate_loss=%.6f, preserve_loss=%.6f, weighted_gate_loss=%.6f, '
-            'weighted_preserve_loss=%.6f, mean_gate=%.6f, '
+            'weighted_preserve_loss=%.6f, signed_loss=%.6f, '
+            'signed_positive=%.6f, signed_negative=%.6f, '
+            'weighted_signed_loss=%.6f, mean_gate=%.6f, '
             'mean_abs_residual=%.6f, mean_abs_correction=%.6f',
             epoch, args.epochs,
             np.mean(loss_records['total']),
@@ -216,6 +235,10 @@ def train(args):
             np.mean(loss_records['preserve_loss']),
             np.mean(loss_records['weighted_gate_loss']),
             np.mean(loss_records['weighted_preserve_loss']),
+            np.mean(loss_records['signed_correction_loss']),
+            np.mean(loss_records['signed_positive_loss']),
+            np.mean(loss_records['signed_negative_loss']),
+            np.mean(loss_records['weighted_signed_correction_loss']),
             np.mean(loss_records['mean_gate']),
             np.mean(loss_records['mean_abs_residual']),
             np.mean(loss_records['mean_abs_correction']),
@@ -239,6 +262,10 @@ def train(args):
                 'gate_target': 'stopgrad(abs(Y - P_row0))',
                 'gate_loss_weight': args.gate_loss_weight,
                 'preserve_loss_weight': args.preserve_loss_weight,
+                'signed_correction_loss': (
+                    '0.5 * balanced[YE*softplus(-C), (1-Y)E*softplus(C)]'
+                ),
+                'signed_correction_loss_weight': args.signed_correction_loss_weight,
             },
         }
         checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
@@ -261,6 +288,7 @@ def train(args):
             'gated_residual_l1': args.residual_l1_weight,
             'error_aware_gate_bce': args.gate_loss_weight,
             'semantic_preservation': args.preserve_loss_weight,
+            'signed_error_correction': args.signed_correction_loss_weight,
             'image_ce': 0.0,
         },
         'native_pixel_losses_fp32': True,
@@ -303,6 +331,7 @@ def build_parser():
     parser.add_argument('--residual_l1_weight', type=float, default=0.0)
     parser.add_argument('--gate_loss_weight', type=float, default=0.0)
     parser.add_argument('--preserve_loss_weight', type=float, default=0.0)
+    parser.add_argument('--signed_correction_loss_weight', type=float, default=0.0)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--sigma', type=float, default=4.0)
     parser.add_argument('--seed', type=int, default=10)
