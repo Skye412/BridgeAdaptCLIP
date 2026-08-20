@@ -6,6 +6,7 @@ from .bridgeadaptclip import (
     BRIDGE_NORMAL_ANCHORS,
     BridgeAdaptCLIPV1,
     BridgeAdaptCLIPV11,
+    BridgeAdaptCLIPV12,
 )
 from .loss import BinaryDiceLoss, FocalLoss
 from .model_load import available_models, load
@@ -16,6 +17,7 @@ __all__ = [
     "PQAdapter",
     "BridgeAdaptCLIPV1",
     "BridgeAdaptCLIPV11",
+    "BridgeAdaptCLIPV12",
     "BRIDGE_NORMAL_ANCHORS",
     "BRIDGE_ANOMALY_ANCHORS",
     "fusion_fun",

@@ -6,6 +6,7 @@ data_root="${BRIDGE2893_ROOT:-/home/skye/data/Skye/databases/Bridge2893_split_se
 diagnostic_dir="${DIAGNOSTIC_DIR:?Set DIAGNOSTIC_DIR to an initialized diagnostic directory}"
 checkpoint="${CHECKPOINT:?Set CHECKPOINT to v1.1 validation-selected Epoch 2}"
 row0_checkpoint="${ROW0_CHECKPOINT:?Set ROW0_CHECKPOINT to Protocol-v2 Row0 Epoch 14}"
+checkpoint_state_key="${CHECKPOINT_STATE_KEY:-bridgeadaptclip_v11}"
 
 for split in val test; do
     mkdir -p "${diagnostic_dir}/${split}"
@@ -14,6 +15,7 @@ for split in val test; do
         --split_name "${split}" \
         --decision_split val \
         --checkpoint_path "${checkpoint}" \
+        --checkpoint_state_key "${checkpoint_state_key}" \
         --row0_checkpoint_path "${row0_checkpoint}" \
         --save_path "${diagnostic_dir}/${split}" \
         --model_input_size 518 \

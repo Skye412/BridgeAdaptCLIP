@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV11, TextualAdapter, VisualAdapter
+from adaptcliplib import BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, TextualAdapter, VisualAdapter
 from dataset import BridgeDualResolutionDataset
 from tools import get_transform, setup_seed
 from tools.bridge_masks import decode_bridge_class_masks
@@ -65,7 +65,12 @@ def diagnose(args):
     _freeze(textual)
     _freeze(visual)
 
-    bridge_model = BridgeAdaptCLIPV11(
+    bridge_class = (
+        BridgeAdaptCLIPV12
+        if args.checkpoint_state_key == 'bridgeadaptclip_v12'
+        else BridgeAdaptCLIPV11
+    )
+    bridge_model = bridge_class(
         semantic_channels=768,
         fusion_channels=args.fusion_channels,
         structural_channels=args.structural_channels,
@@ -74,7 +79,7 @@ def diagnose(args):
         probability_epsilon=args.probability_epsilon,
     )
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
-    bridge_model.load_state_dict(checkpoint['bridgeadaptclip_v11'])
+    bridge_model.load_state_dict(checkpoint[args.checkpoint_state_key])
     actual_row0_sha = file_sha256(args.row0_checkpoint_path)
     if checkpoint.get('row0_checkpoint_sha256') != actual_row0_sha:
         raise ValueError('Row-0 checkpoint hash mismatch.')
@@ -144,6 +149,10 @@ def diagnose(args):
         abs_correction = correction.abs()
         error = (target - row0_probability.float()).abs()
         row0_error = error >= 0.5
+        false_positive_like = (~target.bool()) & (row0_probability >= 0.5)
+        false_negative_like = target.bool() & (row0_probability < 0.5)
+        true_negative_like = (~target.bool()) & (row0_probability < 0.5)
+        true_positive_like = target.bool() & (row0_probability >= 0.5)
         normal_images = (items['anomaly'].to(device) == 0)[:, None, None, None]
         normal_pixels = normal_images.expand_as(target)
         defect_image_pixels = ~normal_pixels
@@ -158,6 +167,10 @@ def diagnose(args):
             'gt_background': ~target.bool(),
             'row0_error_E_ge_0.5': row0_error,
             'row0_correct_E_lt_0.5': ~row0_error,
+            'false_positive_like_Y0_P0_ge_0.5': false_positive_like,
+            'false_negative_like_Y1_P0_lt_0.5': false_negative_like,
+            'true_negative_like_Y0_P0_lt_0.5': true_negative_like,
+            'true_positive_like_Y1_P0_ge_0.5': true_positive_like,
             'crack_pixels': crack,
             'normal_images_all_pixels': normal_pixels,
             'defect_images_all_pixels': defect_image_pixels,
@@ -204,6 +217,7 @@ def diagnose(args):
             'decision_split': args.decision_split,
             'checkpoint_path': args.checkpoint_path,
             'checkpoint_epoch': checkpoint['epoch'],
+            'checkpoint_state_key': args.checkpoint_state_key,
             'row0_checkpoint_path': args.row0_checkpoint_path,
             'row0_checkpoint_sha256': actual_row0_sha,
             'row0_error': 'E = abs(Y - P0)',
@@ -240,6 +254,7 @@ def build_parser():
     parser.add_argument('--split_name', required=True, choices=['val', 'test'])
     parser.add_argument('--decision_split', default='val')
     parser.add_argument('--checkpoint_path', required=True)
+    parser.add_argument('--checkpoint_state_key', default='bridgeadaptclip_v11')
     parser.add_argument('--row0_checkpoint_path', required=True)
     parser.add_argument('--save_path', required=True)
     parser.add_argument('--pretrained_model', default='ViT-L/14@336px')

@@ -9,11 +9,12 @@ import torch
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV11, TextualAdapter, VisualAdapter
+from adaptcliplib import BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, TextualAdapter, VisualAdapter
 from dataset import BridgeDualResolutionDataset
 from tools import get_logger, get_transform, setup_seed
 from tools.bridge_row0 import file_sha256, resize_row0_probability, smooth_row0_probability
 from tools.bridgeadaptclip_losses import BinaryDiceLossWithLogits, BinaryFocalLossWithLogits
+from tools.bridgeadaptclip_v12_losses import error_aware_gate_losses
 
 
 def _freeze(module):
@@ -50,7 +51,12 @@ def train(args):
     _freeze(textual_learner)
     _freeze(visual_learner)
 
-    bridge_model = BridgeAdaptCLIPV11(
+    bridge_class = (
+        BridgeAdaptCLIPV12
+        if args.checkpoint_state_key == 'bridgeadaptclip_v12'
+        else BridgeAdaptCLIPV11
+    )
+    bridge_model = bridge_class(
         semantic_channels=768,
         fusion_channels=args.fusion_channels,
         structural_channels=args.structural_channels,
@@ -115,7 +121,13 @@ def train(args):
     global_step = 0
     completed_epoch = 0
     for epoch in range(1, args.epochs + 1):
-        loss_records = {'total': [], 'pixel_focal': [], 'pixel_dice': [], 'residual_l1': []}
+        loss_records = {
+            'total': [], 'pixel_focal': [], 'pixel_dice': [],
+            'gate_loss': [], 'preserve_loss': [],
+            'weighted_gate_loss': [], 'weighted_preserve_loss': [],
+            'residual_l1': [], 'mean_gate': [],
+            'mean_abs_residual': [], 'mean_abs_correction': [],
+        }
         optimizer.zero_grad(set_to_none=True)
 
         for batch_index, items in enumerate(tqdm(train_loader, desc=f'epoch {epoch}/{args.epochs}')):
@@ -150,10 +162,17 @@ def train(args):
                 )
                 pixel_focal = focal_loss(output['mask_logits'], target_mask)
                 pixel_dice = dice_loss(output['mask_logits'], target_mask)
+                _, gate_loss, preserve_loss = error_aware_gate_losses(
+                    output['gate_logits'], output['gated_residual'],
+                    target_mask, row0_probability,
+                )
+                weighted_gate_loss = args.gate_loss_weight * gate_loss
+                weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
                 residual_l1 = output['gated_residual'].float().abs().mean()
                 total_loss = (
                     pixel_focal + pixel_dice
                     + args.residual_l1_weight * residual_l1
+                    + weighted_gate_loss + weighted_preserve_loss
                 )
 
             scaler.scale(total_loss / args.gradient_accumulation_steps).backward()
@@ -166,28 +185,48 @@ def train(args):
             loss_records['total'].append(float(total_loss.detach()))
             loss_records['pixel_focal'].append(float(pixel_focal.detach()))
             loss_records['pixel_dice'].append(float(pixel_dice.detach()))
+            loss_records['gate_loss'].append(float(gate_loss.detach()))
+            loss_records['preserve_loss'].append(float(preserve_loss.detach()))
+            loss_records['weighted_gate_loss'].append(float(weighted_gate_loss.detach()))
+            loss_records['weighted_preserve_loss'].append(
+                float(weighted_preserve_loss.detach())
+            )
             loss_records['residual_l1'].append(float(residual_l1.detach()))
+            loss_records['mean_gate'].append(float(output['gate'].float().mean().detach()))
+            loss_records['mean_abs_residual'].append(
+                float(output['residual'].float().abs().mean().detach())
+            )
+            loss_records['mean_abs_correction'].append(
+                float(output['gated_residual'].float().abs().mean().detach())
+            )
             if args.max_train_steps and global_step >= args.max_train_steps:
                 break
 
         completed_epoch = epoch
         logger.info(
             'epoch [%d/%d], total=%.6f, pixel_focal=%.6f, pixel_dice=%.6f, '
-            'residual_l1=%.6f',
+            'gate_loss=%.6f, preserve_loss=%.6f, weighted_gate_loss=%.6f, '
+            'weighted_preserve_loss=%.6f, mean_gate=%.6f, '
+            'mean_abs_residual=%.6f, mean_abs_correction=%.6f',
             epoch, args.epochs,
             np.mean(loss_records['total']),
             np.mean(loss_records['pixel_focal']),
             np.mean(loss_records['pixel_dice']),
-            np.mean(loss_records['residual_l1']),
+            np.mean(loss_records['gate_loss']),
+            np.mean(loss_records['preserve_loss']),
+            np.mean(loss_records['weighted_gate_loss']),
+            np.mean(loss_records['weighted_preserve_loss']),
+            np.mean(loss_records['mean_gate']),
+            np.mean(loss_records['mean_abs_residual']),
+            np.mean(loss_records['mean_abs_correction']),
         )
         checkpoint = {
             'epoch': epoch,
-            'bridgeadaptclip_v11': bridge_model.state_dict(),
             'row0_checkpoint_path': os.path.abspath(args.row0_checkpoint_path),
             'row0_checkpoint_sha256': row0_sha256,
             'config': vars(args),
             'architecture': {
-                'model_name': 'BridgeAdaptCLIP-v1.1',
+                'model_name': args.model_name,
                 'semantic_base': 'Original AdaptCLIP Protocol-v2 Row0',
                 'semantic_base_frozen': True,
                 'static_prompts': 'original_adaptclip_prompt_ensemble',
@@ -197,8 +236,12 @@ def train(args):
                 'residual_direction': 'bidirectional_unbounded',
                 'residual_initialization': 'weight=0,bias=0',
                 'gate_initialization': 'weight=0,bias=-4',
+                'gate_target': 'stopgrad(abs(Y - P_row0))',
+                'gate_loss_weight': args.gate_loss_weight,
+                'preserve_loss_weight': args.preserve_loss_weight,
             },
         }
+        checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
         torch.save(checkpoint, os.path.join(args.save_path, f'epoch_{epoch}.pth'))
         if args.max_train_steps and global_step >= args.max_train_steps:
             break
@@ -216,6 +259,8 @@ def train(args):
             'pixel_focal': 1.0,
             'pixel_dice': 1.0,
             'gated_residual_l1': args.residual_l1_weight,
+            'error_aware_gate_bce': args.gate_loss_weight,
+            'semantic_preservation': args.preserve_loss_weight,
             'image_ce': 0.0,
         },
         'native_pixel_losses_fp32': True,
@@ -237,6 +282,8 @@ def build_parser():
     parser.add_argument('--train_data_path', required=True)
     parser.add_argument('--save_path', required=True)
     parser.add_argument('--row0_checkpoint_path', required=True)
+    parser.add_argument('--model_name', default='BridgeAdaptCLIP-v1.1')
+    parser.add_argument('--checkpoint_state_key', default='bridgeadaptclip_v11')
     parser.add_argument('--pretrained_model', default='ViT-L/14@336px')
     parser.add_argument('--features_list', type=int, nargs='+', default=[6, 12, 18, 24])
     parser.add_argument('--model_input_size', type=int, default=518)
@@ -254,6 +301,8 @@ def build_parser():
     parser.add_argument('--focal_alpha', type=float, default=0.75)
     parser.add_argument('--focal_gamma', type=float, default=2.0)
     parser.add_argument('--residual_l1_weight', type=float, default=0.0)
+    parser.add_argument('--gate_loss_weight', type=float, default=0.0)
+    parser.add_argument('--preserve_loss_weight', type=float, default=0.0)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--sigma', type=float, default=4.0)
     parser.add_argument('--seed', type=int, default=10)

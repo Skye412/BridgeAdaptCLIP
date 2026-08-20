@@ -10,7 +10,7 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV11, TextualAdapter, VisualAdapter
+from adaptcliplib import BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, TextualAdapter, VisualAdapter
 from dataset import BridgeDualResolutionDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed
 from tools.bridge_class_metrics import evaluate_bridge_classes
@@ -34,9 +34,10 @@ def evaluate(args):
     if args.metric_resolution != args.structural_input_size:
         raise ValueError('v1.1 requires metric_resolution == structural_input_size.')
     os.makedirs(args.save_path, exist_ok=True)
+    model_slug = args.model_name.lower().replace('-', '').replace('.', '')
     logger = get_logger(
         args.save_path,
-        f'bridge2893_{args.seed}seed_0shot_bridgeadaptclip_v11_test_log.txt',
+        f'bridge2893_{args.seed}seed_0shot_{model_slug}_test_log.txt',
     )
     logger.info(args)
 
@@ -55,7 +56,12 @@ def evaluate(args):
     _freeze(textual_learner)
     _freeze(visual_learner)
 
-    bridge_model = BridgeAdaptCLIPV11(
+    bridge_class = (
+        BridgeAdaptCLIPV12
+        if args.checkpoint_state_key == 'bridgeadaptclip_v12'
+        else BridgeAdaptCLIPV11
+    )
+    bridge_model = bridge_class(
         semantic_channels=768,
         fusion_channels=args.fusion_channels,
         structural_channels=args.structural_channels,
@@ -64,7 +70,7 @@ def evaluate(args):
         probability_epsilon=args.probability_epsilon,
     )
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
-    bridge_model.load_state_dict(checkpoint['bridgeadaptclip_v11'])
+    bridge_model.load_state_dict(checkpoint[args.checkpoint_state_key])
     expected_sha = checkpoint.get('row0_checkpoint_sha256')
     actual_sha = file_sha256(args.row0_checkpoint_path)
     if expected_sha and expected_sha != actual_sha:
@@ -202,7 +208,7 @@ def evaluate(args):
     report = {
         'protocol': {
             'protocol_id': 'bridge2893-eval-v2',
-            'model_name': 'BridgeAdaptCLIP-v1.1',
+            'model_name': args.model_name,
             'model_input_size': args.model_input_size,
             'structural_input_size': args.structural_input_size,
             'metric_resolution': args.metric_resolution,
@@ -232,6 +238,8 @@ def build_parser():
     parser.add_argument('--checkpoint_path', required=True)
     parser.add_argument('--row0_checkpoint_path', required=True)
     parser.add_argument('--save_path', required=True)
+    parser.add_argument('--model_name', default='BridgeAdaptCLIP-v1.1')
+    parser.add_argument('--checkpoint_state_key', default='bridgeadaptclip_v11')
     parser.add_argument('--pretrained_model', default='ViT-L/14@336px')
     parser.add_argument('--features_list', type=int, nargs='+', default=[6, 12, 18, 24])
     parser.add_argument('--model_input_size', type=int, default=518)

@@ -323,3 +323,7 @@ class BridgeAdaptCLIPV11(nn.Module):
             'structural_feature': structural_feature,
             'joint_feature': joint_feature,
         }
+
+
+class BridgeAdaptCLIPV12(BridgeAdaptCLIPV11):
+    """v1.1 architecture trained with explicit Row-0 error-aware gate losses."""
