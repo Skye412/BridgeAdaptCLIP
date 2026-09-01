@@ -67,7 +67,9 @@ def diagnose(args):
 
     bridge_class = (
         BridgeAdaptCLIPV12
-        if args.checkpoint_state_key in ('bridgeadaptclip_v12', 'bridgeadaptclip_v13')
+        if args.checkpoint_state_key in (
+            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14'
+        )
         else BridgeAdaptCLIPV11
     )
     bridge_model = bridge_class(
@@ -117,6 +119,16 @@ def diagnose(args):
     }
     generator = torch.Generator(device='cpu').manual_seed(args.sampling_seed)
     amp_enabled = args.amp and device.type == 'cuda'
+    mechanism_counts = {
+        'fn_total': 0,
+        'fn_recovered': 0,
+        'fn_positive_correction': 0,
+        'fn_final_logit_ge_margin': 0,
+        'fp_total': 0,
+        'fp_suppressed': 0,
+        'fp_negative_correction': 0,
+        'fp_final_logit_le_negative_margin': 0,
+    }
 
     for items in tqdm(loader, desc=f'diagnose {args.split_name}'):
         clip_image = items['img'].to(device, non_blocking=True)
@@ -146,6 +158,7 @@ def diagnose(args):
         gate = output['gate'].float()
         residual = output['residual'].float()
         correction = output['gated_residual'].float()
+        final_logits = output['mask_logits'].float()
         abs_correction = correction.abs()
         error = (target - row0_probability.float()).abs()
         row0_error = error >= 0.5
@@ -153,6 +166,26 @@ def diagnose(args):
         false_negative_like = target.bool() & (row0_probability < 0.5)
         true_negative_like = (~target.bool()) & (row0_probability < 0.5)
         true_positive_like = target.bool() & (row0_probability >= 0.5)
+        mechanism_counts['fn_total'] += int(false_negative_like.sum())
+        mechanism_counts['fn_recovered'] += int(
+            (false_negative_like & (final_logits >= 0.0)).sum()
+        )
+        mechanism_counts['fn_positive_correction'] += int(
+            (false_negative_like & (correction > 0.0)).sum()
+        )
+        mechanism_counts['fn_final_logit_ge_margin'] += int(
+            (false_negative_like & (final_logits >= args.margin)).sum()
+        )
+        mechanism_counts['fp_total'] += int(false_positive_like.sum())
+        mechanism_counts['fp_suppressed'] += int(
+            (false_positive_like & (final_logits < 0.0)).sum()
+        )
+        mechanism_counts['fp_negative_correction'] += int(
+            (false_positive_like & (correction < 0.0)).sum()
+        )
+        mechanism_counts['fp_final_logit_le_negative_margin'] += int(
+            (false_positive_like & (final_logits <= -args.margin)).sum()
+        )
         normal_images = (items['anomaly'].to(device) == 0)[:, None, None, None]
         normal_pixels = normal_images.expand_as(target)
         defect_image_pixels = ~normal_pixels
@@ -209,6 +242,8 @@ def diagnose(args):
     region_report = regions.finalize()
     error_region = region_report.get('row0_error_E_ge_0.5')
     correct_region = region_report.get('row0_correct_E_lt_0.5')
+    fn_total = max(mechanism_counts['fn_total'], 1)
+    fp_total = max(mechanism_counts['fp_total'], 1)
     report = {
         'protocol': {
             'diagnostic': (
@@ -243,6 +278,31 @@ def diagnose(args):
                 if error_region and correct_region else None
             ),
         },
+        'margin_mechanism': {
+            'margin': args.margin,
+            'fn_like_pixel_count': mechanism_counts['fn_total'],
+            'fp_like_pixel_count': mechanism_counts['fp_total'],
+            'fn_recovery_rate': mechanism_counts['fn_recovered'] / fn_total,
+            'fp_suppression_rate': mechanism_counts['fp_suppressed'] / fp_total,
+            'fn_like_positive_correction_ratio': (
+                mechanism_counts['fn_positive_correction'] / fn_total
+            ),
+            'fp_like_negative_correction_ratio': (
+                mechanism_counts['fp_negative_correction'] / fp_total
+            ),
+            'fn_like_final_logit_ge_margin_ratio': (
+                mechanism_counts['fn_final_logit_ge_margin'] / fn_total
+            ),
+            'fp_like_final_logit_le_negative_margin_ratio': (
+                mechanism_counts['fp_final_logit_le_negative_margin'] / fp_total
+            ),
+            'fn_like_mean_correction': (
+                region_report['false_negative_like_Y1_P0_lt_0.5']['mean_correction']
+            ),
+            'fp_like_mean_correction': (
+                region_report['false_positive_like_Y0_P0_ge_0.5']['mean_correction']
+            ),
+        },
     }
     output_path = os.path.join(args.save_path, f'{args.split_name}_residual_diagnostics.json')
     with open(output_path, 'w', encoding='utf-8') as output:
@@ -274,6 +334,7 @@ def build_parser():
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--samples_per_image', type=int, default=4096)
+    parser.add_argument('--margin', type=float, default=1.0)
     parser.add_argument('--sampling_seed', type=int, default=42)
     parser.add_argument('--seed', type=int, default=10)
     parser.add_argument('--amp', action='store_true')

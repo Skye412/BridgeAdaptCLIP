@@ -16,6 +16,7 @@ from tools.bridge_row0 import file_sha256, resize_row0_probability, smooth_row0_
 from tools.bridgeadaptclip_losses import BinaryDiceLossWithLogits, BinaryFocalLossWithLogits
 from tools.bridgeadaptclip_v12_losses import error_aware_gate_losses
 from tools.bridgeadaptclip_v13_losses import signed_error_correction_loss
+from tools.bridgeadaptclip_v14_losses import final_logit_margin_loss
 
 
 def _freeze(module):
@@ -55,7 +56,9 @@ def train(args):
 
     bridge_class = (
         BridgeAdaptCLIPV12
-        if args.checkpoint_state_key in ('bridgeadaptclip_v12', 'bridgeadaptclip_v13')
+        if args.checkpoint_state_key in (
+            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14'
+        )
         else BridgeAdaptCLIPV11
     )
     bridge_model = bridge_class(
@@ -129,6 +132,8 @@ def train(args):
             'weighted_gate_loss': [], 'weighted_preserve_loss': [],
             'signed_correction_loss': [], 'signed_positive_loss': [],
             'signed_negative_loss': [], 'weighted_signed_correction_loss': [],
+            'margin_loss': [], 'fn_margin_loss': [], 'fp_margin_loss': [],
+            'weighted_margin_loss': [],
             'residual_l1': [], 'mean_gate': [],
             'mean_abs_residual': [], 'mean_abs_correction': [],
         }
@@ -175,15 +180,23 @@ def train(args):
                         output['gated_residual'], target_mask, gate_target
                     )
                 )
+                margin_loss, fn_margin_loss, fp_margin_loss = (
+                    final_logit_margin_loss(
+                        output['mask_logits'], target_mask, gate_target,
+                        margin=args.margin,
+                    )
+                )
                 weighted_gate_loss = args.gate_loss_weight * gate_loss
                 weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
                 weighted_signed_loss = args.signed_correction_loss_weight * signed_loss
+                weighted_margin_loss = args.margin_loss_weight * margin_loss
                 residual_l1 = output['gated_residual'].float().abs().mean()
                 total_loss = (
                     pixel_focal + pixel_dice
                     + args.residual_l1_weight * residual_l1
                     + weighted_gate_loss + weighted_preserve_loss
                     + weighted_signed_loss
+                    + weighted_margin_loss
                 )
 
             scaler.scale(total_loss / args.gradient_accumulation_steps).backward()
@@ -208,6 +221,12 @@ def train(args):
             loss_records['weighted_signed_correction_loss'].append(
                 float(weighted_signed_loss.detach())
             )
+            loss_records['margin_loss'].append(float(margin_loss.detach()))
+            loss_records['fn_margin_loss'].append(float(fn_margin_loss.detach()))
+            loss_records['fp_margin_loss'].append(float(fp_margin_loss.detach()))
+            loss_records['weighted_margin_loss'].append(
+                float(weighted_margin_loss.detach())
+            )
             loss_records['residual_l1'].append(float(residual_l1.detach()))
             loss_records['mean_gate'].append(float(output['gate'].float().mean().detach()))
             loss_records['mean_abs_residual'].append(
@@ -225,7 +244,9 @@ def train(args):
             'gate_loss=%.6f, preserve_loss=%.6f, weighted_gate_loss=%.6f, '
             'weighted_preserve_loss=%.6f, signed_loss=%.6f, '
             'signed_positive=%.6f, signed_negative=%.6f, '
-            'weighted_signed_loss=%.6f, mean_gate=%.6f, '
+            'weighted_signed_loss=%.6f, margin_loss=%.6f, '
+            'fn_margin_loss=%.6f, fp_margin_loss=%.6f, '
+            'weighted_margin_loss=%.6f, mean_gate=%.6f, '
             'mean_abs_residual=%.6f, mean_abs_correction=%.6f',
             epoch, args.epochs,
             np.mean(loss_records['total']),
@@ -239,6 +260,10 @@ def train(args):
             np.mean(loss_records['signed_positive_loss']),
             np.mean(loss_records['signed_negative_loss']),
             np.mean(loss_records['weighted_signed_correction_loss']),
+            np.mean(loss_records['margin_loss']),
+            np.mean(loss_records['fn_margin_loss']),
+            np.mean(loss_records['fp_margin_loss']),
+            np.mean(loss_records['weighted_margin_loss']),
             np.mean(loss_records['mean_gate']),
             np.mean(loss_records['mean_abs_residual']),
             np.mean(loss_records['mean_abs_correction']),
@@ -266,6 +291,13 @@ def train(args):
                     '0.5 * balanced[YE*softplus(-C), (1-Y)E*softplus(C)]'
                 ),
                 'signed_correction_loss_weight': args.signed_correction_loss_weight,
+                'margin_loss': (
+                    '0.5*mean[YE*softplus(m-Z_final)] + '
+                    '0.5*mean[(1-Y)E*softplus(m+Z_final)]'
+                ),
+                'margin_loss_supervision': 'final output[mask_logits]',
+                'margin': args.margin,
+                'margin_loss_weight': args.margin_loss_weight,
             },
         }
         checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
@@ -289,9 +321,12 @@ def train(args):
             'error_aware_gate_bce': args.gate_loss_weight,
             'semantic_preservation': args.preserve_loss_weight,
             'signed_error_correction': args.signed_correction_loss_weight,
+            'final_logit_margin': args.margin_loss_weight,
             'image_ce': 0.0,
         },
         'native_pixel_losses_fp32': True,
+        'margin': args.margin,
+        'margin_supervision': 'final output[mask_logits]',
         'clip_backbone_frozen': True,
         'visual_adapter_frozen': True,
         'textual_adapter_frozen': True,
@@ -332,6 +367,8 @@ def build_parser():
     parser.add_argument('--gate_loss_weight', type=float, default=0.0)
     parser.add_argument('--preserve_loss_weight', type=float, default=0.0)
     parser.add_argument('--signed_correction_loss_weight', type=float, default=0.0)
+    parser.add_argument('--margin_loss_weight', type=float, default=0.0)
+    parser.add_argument('--margin', type=float, default=1.0)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--sigma', type=float, default=4.0)
     parser.add_argument('--seed', type=int, default=10)
