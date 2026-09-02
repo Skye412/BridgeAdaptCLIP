@@ -16,10 +16,14 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 class BridgeDualResolutionDataset(data.Dataset):
-    def __init__(self, root, clip_transform, structural_input_size=1024):
+    def __init__(
+        self, root, clip_transform, structural_input_size=1024,
+        return_native_skeleton=False,
+    ):
         self.root = root
         self.clip_transform = clip_transform
         self.structural_input_size = structural_input_size
+        self.return_native_skeleton = return_native_skeleton
 
         with open(os.path.join(root, 'meta.json'), 'r', encoding='utf-8') as meta_file:
             meta = json.load(meta_file)
@@ -60,11 +64,13 @@ class BridgeDualResolutionDataset(data.Dataset):
                 raise ValueError(
                     f'{image_path} GT has shape {native_mask.shape}; expected {expected_size}.'
                 )
-            native_mask = torch.from_numpy(native_mask.copy()).float()
+            native_mask_array = native_mask.copy()
+            native_mask = torch.from_numpy(native_mask_array).float()
         else:
+            native_mask_array = None
             native_mask = torch.zeros(expected_size, dtype=torch.float32)
 
-        return {
+        result = {
             'img': clip_image,
             'structural_img': structural_image,
             'native_mask': native_mask,
@@ -73,3 +79,13 @@ class BridgeDualResolutionDataset(data.Dataset):
             'sample_id': os.path.splitext(os.path.basename(relative_path))[0],
             'img_path': image_path,
         }
+        if self.return_native_skeleton:
+            if native_mask_array is None:
+                native_skeleton = torch.zeros(expected_size, dtype=torch.float32)
+            else:
+                from skimage.morphology import skeletonize
+
+                skeleton = skeletonize(native_mask_array.astype(bool))
+                native_skeleton = torch.from_numpy(skeleton.copy()).float()
+            result['native_skeleton'] = native_skeleton
+        return result

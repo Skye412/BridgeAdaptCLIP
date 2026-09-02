@@ -18,6 +18,7 @@ from tools.bridgeadaptclip_v12_losses import error_aware_gate_losses
 from tools.bridgeadaptclip_v13_losses import signed_error_correction_loss
 from tools.bridgeadaptclip_v14_losses import final_logit_margin_loss
 from tools.bridgeadaptclip_v15_losses import hard_pixel_ranking_loss
+from tools.bridgeadaptclip_v16_losses import skeleton_balanced_hard_pixel_ranking_loss
 
 
 def _freeze(module):
@@ -59,7 +60,7 @@ def train(args):
         BridgeAdaptCLIPV12
         if args.checkpoint_state_key in (
             'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
-            'bridgeadaptclip_v15'
+            'bridgeadaptclip_v15', 'bridgeadaptclip_v16'
         )
         else BridgeAdaptCLIPV11
     )
@@ -97,6 +98,7 @@ def train(args):
         args.train_data_path,
         clip_transform=clip_transform,
         structural_input_size=args.structural_input_size,
+        return_native_skeleton=args.skeleton_balanced_ranking,
     )
     train_loader = torch.utils.data.DataLoader(
         train_data,
@@ -137,7 +139,9 @@ def train(args):
             'margin_loss': [], 'fn_margin_loss': [], 'fp_margin_loss': [],
             'weighted_margin_loss': [],
             'ranking_loss': [], 'weighted_ranking_loss': [],
+            'global_ranking_loss': [], 'thin_ranking_loss': [],
             'hard_positive_logit': [], 'hard_negative_logit': [],
+            'thin_positive_logit': [], 'selected_skeleton_count': [],
             'ranking_valid_images': [],
             'residual_l1': [], 'mean_gate': [],
             'mean_abs_residual': [], 'mean_abs_correction': [],
@@ -148,6 +152,11 @@ def train(args):
             clip_image = items['img'].to(device, non_blocking=True)
             structural_image = items['structural_img'].to(device, non_blocking=True)
             target_mask = items['native_mask'].to(device, non_blocking=True).unsqueeze(1)
+            skeleton_mask = None
+            if args.skeleton_balanced_ranking:
+                skeleton_mask = items['native_skeleton'].to(
+                    device, non_blocking=True
+                ).unsqueeze(1)
 
             # Keep the frozen semantic base on the exact Row-0 inference path.
             # AMP is applied only to the newly trained structural module.
@@ -191,17 +200,38 @@ def train(args):
                         margin=args.margin,
                     )
                 )
-                (
-                    ranking_loss,
-                    hard_positive_logit,
-                    hard_negative_logit,
-                    ranking_valid_images,
-                ) = hard_pixel_ranking_loss(
-                    output['mask_logits'],
-                    target_mask,
-                    hard_positive_count=args.hard_positive_count,
-                    hard_negative_count=args.hard_negative_count,
-                )
+                if args.skeleton_balanced_ranking:
+                    (
+                        ranking_loss,
+                        global_ranking_loss,
+                        thin_ranking_loss,
+                        hard_positive_logit,
+                        thin_positive_logit,
+                        hard_negative_logit,
+                        selected_skeleton_count,
+                        ranking_valid_images,
+                    ) = skeleton_balanced_hard_pixel_ranking_loss(
+                        output['mask_logits'], target_mask, skeleton_mask,
+                        global_positive_count=args.global_positive_count,
+                        skeleton_positive_count=args.skeleton_positive_count,
+                        hard_negative_count=args.hard_negative_count,
+                    )
+                else:
+                    (
+                        ranking_loss,
+                        hard_positive_logit,
+                        hard_negative_logit,
+                        ranking_valid_images,
+                    ) = hard_pixel_ranking_loss(
+                        output['mask_logits'],
+                        target_mask,
+                        hard_positive_count=args.hard_positive_count,
+                        hard_negative_count=args.hard_negative_count,
+                    )
+                    global_ranking_loss = ranking_loss
+                    thin_ranking_loss = ranking_loss
+                    thin_positive_logit = hard_positive_logit
+                    selected_skeleton_count = ranking_loss.detach() * 0.0
                 weighted_gate_loss = args.gate_loss_weight * gate_loss
                 weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
                 weighted_signed_loss = args.signed_correction_loss_weight * signed_loss
@@ -246,6 +276,12 @@ def train(args):
                 float(weighted_margin_loss.detach())
             )
             loss_records['ranking_loss'].append(float(ranking_loss.detach()))
+            loss_records['global_ranking_loss'].append(
+                float(global_ranking_loss.detach())
+            )
+            loss_records['thin_ranking_loss'].append(
+                float(thin_ranking_loss.detach())
+            )
             loss_records['weighted_ranking_loss'].append(
                 float(weighted_ranking_loss.detach())
             )
@@ -254,6 +290,12 @@ def train(args):
             )
             loss_records['hard_negative_logit'].append(
                 float(hard_negative_logit.detach())
+            )
+            loss_records['thin_positive_logit'].append(
+                float(thin_positive_logit.detach())
+            )
+            loss_records['selected_skeleton_count'].append(
+                float(selected_skeleton_count.detach())
             )
             loss_records['ranking_valid_images'].append(ranking_valid_images)
             loss_records['residual_l1'].append(float(residual_l1.detach()))
@@ -277,7 +319,9 @@ def train(args):
             'fn_margin_loss=%.6f, fp_margin_loss=%.6f, '
             'weighted_margin_loss=%.6f, mean_gate=%.6f, '
             'ranking_loss=%.6f, weighted_ranking_loss=%.6f, '
-            'hard_positive_logit=%.6f, hard_negative_logit=%.6f, '
+            'global_ranking_loss=%.6f, thin_ranking_loss=%.6f, '
+            'hard_positive_logit=%.6f, thin_positive_logit=%.6f, '
+            'hard_negative_logit=%.6f, selected_skeleton_count=%.3f, '
             'ranking_valid_images=%.3f, mean_abs_residual=%.6f, '
             'mean_abs_correction=%.6f',
             epoch, args.epochs,
@@ -299,8 +343,12 @@ def train(args):
             np.mean(loss_records['mean_gate']),
             np.mean(loss_records['ranking_loss']),
             np.mean(loss_records['weighted_ranking_loss']),
+            np.mean(loss_records['global_ranking_loss']),
+            np.mean(loss_records['thin_ranking_loss']),
             np.mean(loss_records['hard_positive_logit']),
+            np.mean(loss_records['thin_positive_logit']),
             np.mean(loss_records['hard_negative_logit']),
+            np.mean(loss_records['selected_skeleton_count']),
             np.mean(loss_records['ranking_valid_images']),
             np.mean(loss_records['mean_abs_residual']),
             np.mean(loss_records['mean_abs_correction']),
@@ -342,6 +390,10 @@ def train(args):
                 'hard_positive_count_per_image': args.hard_positive_count,
                 'hard_negative_count_per_image': args.hard_negative_count,
                 'ranking_loss_weight': args.ranking_loss_weight,
+                'skeleton_balanced_ranking': args.skeleton_balanced_ranking,
+                'skeletonization': 'skimage.morphology.skeletonize(binary_GT)',
+                'global_positive_count_per_image': args.global_positive_count,
+                'skeleton_positive_count_per_image': args.skeleton_positive_count,
             },
         }
         checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
@@ -375,6 +427,10 @@ def train(args):
         'hard_pixel_ranking_supervision': 'final output[mask_logits]',
         'hard_positive_count_per_image': args.hard_positive_count,
         'hard_negative_count_per_image': args.hard_negative_count,
+        'skeleton_balanced_ranking': args.skeleton_balanced_ranking,
+        'skeletonization': 'skimage.morphology.skeletonize(binary_GT)',
+        'global_positive_count_per_image': args.global_positive_count,
+        'skeleton_positive_count_per_image': args.skeleton_positive_count,
         'clip_backbone_frozen': True,
         'visual_adapter_frozen': True,
         'textual_adapter_frozen': True,
@@ -420,6 +476,9 @@ def build_parser():
     parser.add_argument('--ranking_loss_weight', type=float, default=0.0)
     parser.add_argument('--hard_positive_count', type=int, default=256)
     parser.add_argument('--hard_negative_count', type=int, default=256)
+    parser.add_argument('--skeleton_balanced_ranking', action='store_true')
+    parser.add_argument('--global_positive_count', type=int, default=128)
+    parser.add_argument('--skeleton_positive_count', type=int, default=128)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--sigma', type=float, default=4.0)
     parser.add_argument('--seed', type=int, default=10)
