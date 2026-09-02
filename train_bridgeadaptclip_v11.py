@@ -17,6 +17,7 @@ from tools.bridgeadaptclip_losses import BinaryDiceLossWithLogits, BinaryFocalLo
 from tools.bridgeadaptclip_v12_losses import error_aware_gate_losses
 from tools.bridgeadaptclip_v13_losses import signed_error_correction_loss
 from tools.bridgeadaptclip_v14_losses import final_logit_margin_loss
+from tools.bridgeadaptclip_v15_losses import hard_pixel_ranking_loss
 
 
 def _freeze(module):
@@ -57,7 +58,8 @@ def train(args):
     bridge_class = (
         BridgeAdaptCLIPV12
         if args.checkpoint_state_key in (
-            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14'
+            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
+            'bridgeadaptclip_v15'
         )
         else BridgeAdaptCLIPV11
     )
@@ -134,6 +136,9 @@ def train(args):
             'signed_negative_loss': [], 'weighted_signed_correction_loss': [],
             'margin_loss': [], 'fn_margin_loss': [], 'fp_margin_loss': [],
             'weighted_margin_loss': [],
+            'ranking_loss': [], 'weighted_ranking_loss': [],
+            'hard_positive_logit': [], 'hard_negative_logit': [],
+            'ranking_valid_images': [],
             'residual_l1': [], 'mean_gate': [],
             'mean_abs_residual': [], 'mean_abs_correction': [],
         }
@@ -186,10 +191,22 @@ def train(args):
                         margin=args.margin,
                     )
                 )
+                (
+                    ranking_loss,
+                    hard_positive_logit,
+                    hard_negative_logit,
+                    ranking_valid_images,
+                ) = hard_pixel_ranking_loss(
+                    output['mask_logits'],
+                    target_mask,
+                    hard_positive_count=args.hard_positive_count,
+                    hard_negative_count=args.hard_negative_count,
+                )
                 weighted_gate_loss = args.gate_loss_weight * gate_loss
                 weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
                 weighted_signed_loss = args.signed_correction_loss_weight * signed_loss
                 weighted_margin_loss = args.margin_loss_weight * margin_loss
+                weighted_ranking_loss = args.ranking_loss_weight * ranking_loss
                 residual_l1 = output['gated_residual'].float().abs().mean()
                 total_loss = (
                     pixel_focal + pixel_dice
@@ -197,6 +214,7 @@ def train(args):
                     + weighted_gate_loss + weighted_preserve_loss
                     + weighted_signed_loss
                     + weighted_margin_loss
+                    + weighted_ranking_loss
                 )
 
             scaler.scale(total_loss / args.gradient_accumulation_steps).backward()
@@ -227,6 +245,17 @@ def train(args):
             loss_records['weighted_margin_loss'].append(
                 float(weighted_margin_loss.detach())
             )
+            loss_records['ranking_loss'].append(float(ranking_loss.detach()))
+            loss_records['weighted_ranking_loss'].append(
+                float(weighted_ranking_loss.detach())
+            )
+            loss_records['hard_positive_logit'].append(
+                float(hard_positive_logit.detach())
+            )
+            loss_records['hard_negative_logit'].append(
+                float(hard_negative_logit.detach())
+            )
+            loss_records['ranking_valid_images'].append(ranking_valid_images)
             loss_records['residual_l1'].append(float(residual_l1.detach()))
             loss_records['mean_gate'].append(float(output['gate'].float().mean().detach()))
             loss_records['mean_abs_residual'].append(
@@ -247,7 +276,10 @@ def train(args):
             'weighted_signed_loss=%.6f, margin_loss=%.6f, '
             'fn_margin_loss=%.6f, fp_margin_loss=%.6f, '
             'weighted_margin_loss=%.6f, mean_gate=%.6f, '
-            'mean_abs_residual=%.6f, mean_abs_correction=%.6f',
+            'ranking_loss=%.6f, weighted_ranking_loss=%.6f, '
+            'hard_positive_logit=%.6f, hard_negative_logit=%.6f, '
+            'ranking_valid_images=%.3f, mean_abs_residual=%.6f, '
+            'mean_abs_correction=%.6f',
             epoch, args.epochs,
             np.mean(loss_records['total']),
             np.mean(loss_records['pixel_focal']),
@@ -265,6 +297,11 @@ def train(args):
             np.mean(loss_records['fp_margin_loss']),
             np.mean(loss_records['weighted_margin_loss']),
             np.mean(loss_records['mean_gate']),
+            np.mean(loss_records['ranking_loss']),
+            np.mean(loss_records['weighted_ranking_loss']),
+            np.mean(loss_records['hard_positive_logit']),
+            np.mean(loss_records['hard_negative_logit']),
+            np.mean(loss_records['ranking_valid_images']),
             np.mean(loss_records['mean_abs_residual']),
             np.mean(loss_records['mean_abs_correction']),
         )
@@ -298,6 +335,13 @@ def train(args):
                 'margin_loss_supervision': 'final output[mask_logits]',
                 'margin': args.margin,
                 'margin_loss_weight': args.margin_loss_weight,
+                'hard_pixel_ranking_loss': (
+                    'mean_image mean_pair softplus(Z_hard_negative - '
+                    'Z_hard_positive) on final output[mask_logits]'
+                ),
+                'hard_positive_count_per_image': args.hard_positive_count,
+                'hard_negative_count_per_image': args.hard_negative_count,
+                'ranking_loss_weight': args.ranking_loss_weight,
             },
         }
         checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
@@ -322,11 +366,15 @@ def train(args):
             'semantic_preservation': args.preserve_loss_weight,
             'signed_error_correction': args.signed_correction_loss_weight,
             'final_logit_margin': args.margin_loss_weight,
+            'hard_pixel_ranking': args.ranking_loss_weight,
             'image_ce': 0.0,
         },
         'native_pixel_losses_fp32': True,
         'margin': args.margin,
         'margin_supervision': 'final output[mask_logits]',
+        'hard_pixel_ranking_supervision': 'final output[mask_logits]',
+        'hard_positive_count_per_image': args.hard_positive_count,
+        'hard_negative_count_per_image': args.hard_negative_count,
         'clip_backbone_frozen': True,
         'visual_adapter_frozen': True,
         'textual_adapter_frozen': True,
@@ -369,6 +417,9 @@ def build_parser():
     parser.add_argument('--signed_correction_loss_weight', type=float, default=0.0)
     parser.add_argument('--margin_loss_weight', type=float, default=0.0)
     parser.add_argument('--margin', type=float, default=1.0)
+    parser.add_argument('--ranking_loss_weight', type=float, default=0.0)
+    parser.add_argument('--hard_positive_count', type=int, default=256)
+    parser.add_argument('--hard_negative_count', type=int, default=256)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--sigma', type=float, default=4.0)
     parser.add_argument('--seed', type=int, default=10)

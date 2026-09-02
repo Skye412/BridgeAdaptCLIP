@@ -59,7 +59,8 @@ def evaluate(args):
     bridge_class = (
         BridgeAdaptCLIPV12
         if args.checkpoint_state_key in (
-            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14'
+            'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
+            'bridgeadaptclip_v15'
         )
         else BridgeAdaptCLIPV11
     )
