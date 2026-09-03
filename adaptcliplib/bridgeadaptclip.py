@@ -327,3 +327,70 @@ class BridgeAdaptCLIPV11(nn.Module):
 
 class BridgeAdaptCLIPV12(BridgeAdaptCLIPV11):
     """v1.1 architecture trained with explicit Row-0 error-aware gate losses."""
+
+
+class BridgeAdaptCLIPV20(nn.Module):
+    """Low-resolution non-positive calibration applied after a frozen fine base."""
+
+    def __init__(self, joint_channels=128, broad_channels=128, output_size=1024):
+        super().__init__()
+        if output_size % 8:
+            raise ValueError('output_size must be divisible by 8')
+        self.output_size = output_size
+        self.broad_size = output_size // 8
+        self.broad_block = nn.Sequential(
+            nn.Conv2d(joint_channels + 2, broad_channels, 3, padding=1, bias=False),
+            _group_norm(broad_channels),
+            nn.GELU(),
+            nn.Conv2d(
+                broad_channels, broad_channels, 3, padding=2, dilation=2, bias=False
+            ),
+            _group_norm(broad_channels),
+            nn.GELU(),
+        )
+        self.gate_head = nn.Conv2d(broad_channels, 1, 1)
+        self.magnitude_head = nn.Conv2d(broad_channels, 1, 1)
+        nn.init.zeros_(self.gate_head.weight)
+        nn.init.constant_(self.gate_head.bias, -4.0)
+        nn.init.zeros_(self.magnitude_head.weight)
+        nn.init.constant_(self.magnitude_head.bias, -4.0)
+
+    def forward(self, fine_joint_feature, fine_logits, row0_probability):
+        expected = (self.output_size, self.output_size)
+        if fine_logits.shape[-2:] != expected or row0_probability.shape[-2:] != expected:
+            raise ValueError('fine_logits and row0_probability must match output_size')
+        broad_joint = F.adaptive_avg_pool2d(
+            fine_joint_feature.detach(), (self.broad_size, self.broad_size)
+        )
+        fine_probability = torch.sigmoid(fine_logits.detach().float())
+        fine_low = F.interpolate(
+            fine_probability, size=broad_joint.shape[-2:], mode='bilinear',
+            align_corners=False,
+        )
+        row0_low = F.interpolate(
+            row0_probability.detach().float(), size=broad_joint.shape[-2:],
+            mode='bilinear', align_corners=False,
+        )
+        broad_feature = self.broad_block(torch.cat([broad_joint, fine_low, row0_low], 1))
+        gate_logits_low = self.gate_head(broad_feature)
+        magnitude_logits_low = self.magnitude_head(broad_feature)
+        gate_logits = F.interpolate(
+            gate_logits_low, size=expected, mode='bilinear', align_corners=False
+        )
+        magnitude_logits = F.interpolate(
+            magnitude_logits_low, size=expected, mode='bilinear', align_corners=False
+        )
+        broad_gate = torch.sigmoid(gate_logits)
+        broad_magnitude = F.softplus(magnitude_logits.float())
+        broad_correction = -broad_gate * broad_magnitude
+        final_logits = fine_logits.detach().float() + broad_correction
+        return {
+            'mask_logits': final_logits,
+            'fine_logits': fine_logits.detach(),
+            'fine_probability': fine_probability,
+            'broad_feature': broad_feature,
+            'broad_gate_logits': gate_logits,
+            'broad_gate': broad_gate,
+            'broad_magnitude': broad_magnitude,
+            'broad_correction': broad_correction,
+        }
