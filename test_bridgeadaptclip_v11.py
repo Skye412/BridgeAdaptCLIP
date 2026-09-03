@@ -10,7 +10,10 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, TextualAdapter, VisualAdapter
+from adaptcliplib import (
+    BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, BridgeAdaptCLIPV21Fine,
+    TextualAdapter, VisualAdapter,
+)
 from dataset import BridgeDualResolutionDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed
 from tools.bridge_class_metrics import evaluate_bridge_classes
@@ -56,14 +59,16 @@ def evaluate(args):
     _freeze(textual_learner)
     _freeze(visual_learner)
 
-    bridge_class = (
-        BridgeAdaptCLIPV12
-        if args.checkpoint_state_key in (
+    if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+        bridge_class = BridgeAdaptCLIPV21Fine
+    else:
+        bridge_class = (
+            BridgeAdaptCLIPV12
+            if args.checkpoint_state_key in (
             'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
             'bridgeadaptclip_v15', 'bridgeadaptclip_v16', 'bridgeadaptclip_v17'
+            ) else BridgeAdaptCLIPV11
         )
-        else BridgeAdaptCLIPV11
-    )
     bridge_model = bridge_class(
         semantic_channels=768,
         fusion_channels=args.fusion_channels,
@@ -149,9 +154,15 @@ def evaluate(args):
                 global_visual_logits, global_textual_logits, smoothed_row0
             )
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=amp_enabled):
-            output = bridge_model(
-                visual_patch_feature, row0_probability, structural_image
-            )
+            if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                output = bridge_model(
+                    visual_patch_feature, patch_features,
+                    row0_probability, structural_image,
+                )
+            else:
+                output = bridge_model(
+                    visual_patch_feature, row0_probability, structural_image
+                )
             pixel_score = torch.sigmoid(output['mask_logits'])[:, 0]
 
         pixel_score = torch.nan_to_num(pixel_score.float(), nan=0.0, posinf=1.0, neginf=0.0)

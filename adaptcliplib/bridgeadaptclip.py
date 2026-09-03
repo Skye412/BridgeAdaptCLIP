@@ -394,3 +394,123 @@ class BridgeAdaptCLIPV20(nn.Module):
             'broad_magnitude': broad_magnitude,
             'broad_correction': broad_correction,
         }
+
+
+class MultiLevelSemanticGuidance(nn.Module):
+    """Zero-initialized shallow CLIP residuals added to the adapted deep feature."""
+
+    def __init__(self, input_channels=768, output_channels=128, shallow_levels=3):
+        super().__init__()
+        self.input_channels = input_channels
+        self.output_channels = output_channels
+        self.shallow_levels = shallow_levels
+        self.branches = nn.ModuleList()
+        for _ in range(shallow_levels):
+            branch = nn.Sequential(
+                nn.Conv2d(input_channels, output_channels, 1, bias=False),
+                _group_norm(output_channels),
+                nn.GELU(),
+                nn.Conv2d(output_channels, output_channels, 1),
+            )
+            nn.init.zeros_(branch[-1].weight)
+            nn.init.zeros_(branch[-1].bias)
+            self.branches.append(branch)
+
+    @staticmethod
+    def tokens_to_grid(tokens):
+        if tokens.ndim != 3:
+            raise ValueError('CLIP patch tokens must have shape B x N x C')
+        spatial = tokens[:, 1:, :]
+        side = int(spatial.shape[1] ** 0.5)
+        if side * side != spatial.shape[1]:
+            raise ValueError('CLIP spatial token count must form a square grid')
+        return spatial.permute(0, 2, 1).reshape(
+            spatial.shape[0], spatial.shape[2], side, side
+        )
+
+    def forward(self, base_feature, patch_features):
+        if len(patch_features) != self.shallow_levels + 1:
+            raise ValueError(
+                f'Expected {self.shallow_levels + 1} CLIP levels, got {len(patch_features)}'
+            )
+        fused = base_feature
+        residuals = []
+        expected_grid = base_feature.shape[-2:]
+        for branch, tokens in zip(self.branches, patch_features[:-1]):
+            grid = self.tokens_to_grid(tokens.detach().float())
+            if grid.shape[1] != self.input_channels or grid.shape[-2:] != expected_grid:
+                raise ValueError('All CLIP levels must match the deep 37x37 feature grid')
+            residual = branch(F.normalize(grid, dim=1))
+            fused = fused + residual
+            residuals.append(residual)
+        return fused, residuals
+
+
+class BridgeAdaptCLIPV21Fine(BridgeAdaptCLIPV12):
+    """v1.3 fine architecture guided by frozen CLIP levels 6, 12, 18, and 24."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.clip_feature_levels = (6, 12, 18, 24)
+        self.multi_level_guidance = MultiLevelSemanticGuidance(
+            input_channels=self.semantic_channels,
+            output_channels=self.fusion_channels,
+            shallow_levels=3,
+        )
+
+    def forward(self, visual_patch_feature, patch_features, row0_probability, structural_image):
+        expected_size = (self.structural_input_size, self.structural_input_size)
+        if structural_image.shape[-2:] != expected_size:
+            raise ValueError('Structural image has an unexpected spatial size')
+        if row0_probability.shape[-2:] != expected_size or row0_probability.shape[1] != 1:
+            raise ValueError('Row-0 probability has an unexpected shape')
+        base_semantic = self.semantic_projection(visual_patch_feature)
+        semantic_feature, level_residuals = self.multi_level_guidance(
+            base_semantic, patch_features
+        )
+        structural_feature = self.degconv_lite(self.structural_stem(structural_image))
+        semantic_up = F.interpolate(
+            semantic_feature, size=structural_feature.shape[-2:], mode='bilinear',
+            align_corners=False,
+        )
+        row0_fusion = F.interpolate(
+            row0_probability.float(), size=structural_feature.shape[-2:],
+            mode='bilinear', align_corners=False,
+        )
+        joint_feature = self.joint_projection(torch.cat([
+            structural_feature, semantic_up, row0_fusion
+        ], dim=1))
+        residual_feature = F.interpolate(
+            joint_feature, scale_factor=2, mode='bilinear', align_corners=False
+        )
+        residual_feature = self.residual_decoder_512(residual_feature)
+        residual_feature = F.interpolate(
+            residual_feature, scale_factor=2, mode='bilinear', align_corners=False
+        )
+        residual_feature = self.residual_decoder_1024(residual_feature)
+        residual = self.residual_head(residual_feature)
+        gate_logits = self.gate_head(self.gate_projection(joint_feature))
+        gate_logits = F.interpolate(
+            gate_logits, size=expected_size, mode='bilinear', align_corners=False
+        )
+        gate = torch.sigmoid(gate_logits)
+        safe_probability = row0_probability.float().clamp(
+            self.probability_epsilon, 1.0 - self.probability_epsilon
+        )
+        row0_logits = torch.logit(safe_probability)
+        gated_residual = gate * residual
+        return {
+            'mask_logits': row0_logits + gated_residual,
+            'row0_logits': row0_logits,
+            'row0_probability': row0_probability,
+            'residual': residual,
+            'gate': gate,
+            'gate_logits': gate_logits,
+            'gated_residual': gated_residual,
+            'semantic_feature': semantic_feature,
+            'base_semantic_feature': base_semantic,
+            'multi_level_residuals': level_residuals,
+            'semantic_up': semantic_up,
+            'structural_feature': structural_feature,
+            'joint_feature': joint_feature,
+        }

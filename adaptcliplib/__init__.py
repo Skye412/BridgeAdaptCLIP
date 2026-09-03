@@ -8,6 +8,8 @@ from .bridgeadaptclip import (
     BridgeAdaptCLIPV11,
     BridgeAdaptCLIPV12,
     BridgeAdaptCLIPV20,
+    BridgeAdaptCLIPV21Fine,
+    MultiLevelSemanticGuidance,
 )
 from .loss import BinaryDiceLoss, FocalLoss
 from .model_load import available_models, load
@@ -20,6 +22,8 @@ __all__ = [
     "BridgeAdaptCLIPV11",
     "BridgeAdaptCLIPV12",
     "BridgeAdaptCLIPV20",
+    "BridgeAdaptCLIPV21Fine",
+    "MultiLevelSemanticGuidance",
     "BRIDGE_NORMAL_ANCHORS",
     "BRIDGE_ANOMALY_ANCHORS",
     "fusion_fun",

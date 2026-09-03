@@ -9,7 +9,10 @@ import torch
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, TextualAdapter, VisualAdapter
+from adaptcliplib import (
+    BridgeAdaptCLIPV11, BridgeAdaptCLIPV12, BridgeAdaptCLIPV21Fine,
+    TextualAdapter, VisualAdapter,
+)
 from dataset import BridgeDualResolutionDataset
 from tools import get_logger, get_transform, setup_seed
 from tools.bridge_row0 import file_sha256, resize_row0_probability, smooth_row0_probability
@@ -61,14 +64,16 @@ def train(args):
     _freeze(textual_learner)
     _freeze(visual_learner)
 
-    bridge_class = (
-        BridgeAdaptCLIPV12
-        if args.checkpoint_state_key in (
+    if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+        bridge_class = BridgeAdaptCLIPV21Fine
+    else:
+        bridge_class = (
+            BridgeAdaptCLIPV12
+            if args.checkpoint_state_key in (
             'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
             'bridgeadaptclip_v15', 'bridgeadaptclip_v16', 'bridgeadaptclip_v17'
+            ) else BridgeAdaptCLIPV11
         )
-        else BridgeAdaptCLIPV11
-    )
     bridge_model = bridge_class(
         semantic_channels=768,
         fusion_channels=args.fusion_channels,
@@ -187,9 +192,16 @@ def train(args):
                 )
 
             with torch.cuda.amp.autocast(enabled=amp_enabled):
-                output = bridge_model(
-                    visual_patch_feature.detach(), row0_probability, structural_image
-                )
+                if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                    output = bridge_model(
+                        visual_patch_feature.detach(),
+                        [feature.detach() for feature in patch_features],
+                        row0_probability, structural_image,
+                    )
+                else:
+                    output = bridge_model(
+                        visual_patch_feature.detach(), row0_probability, structural_image
+                    )
                 pixel_focal = focal_loss(output['mask_logits'], target_mask)
                 pixel_dice = dice_loss(output['mask_logits'], target_mask)
                 gate_target, gate_loss, preserve_loss = error_aware_gate_losses(
@@ -441,6 +453,10 @@ def train(args):
                 'skeletonization': 'skimage.morphology.skeletonize(binary_GT)',
                 'global_positive_count_per_image': args.global_positive_count,
                 'skeleton_positive_count_per_image': args.skeleton_positive_count,
+                'multi_level_clip_guidance': (
+                    args.features_list
+                    if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine' else None
+                ),
             },
         }
         checkpoint[args.checkpoint_state_key] = bridge_model.state_dict()
@@ -495,6 +511,10 @@ def train(args):
         'row0_prompt_strategy': 'original_adaptclip_prompt_ensemble',
         'row0_probability_pipeline': 'average_visual_textual_then_gaussian_sigma4_then_bilinear1024',
         'image_head_policy': 'exact_frozen_row0',
+        'multi_level_clip_guidance': (
+            args.features_list
+            if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine' else None
+        ),
     }
     with open(os.path.join(args.save_path, 'training_metadata.json'), 'w', encoding='utf-8') as output:
         json.dump(metadata, output, indent=2)
