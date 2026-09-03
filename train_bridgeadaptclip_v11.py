@@ -19,6 +19,7 @@ from tools.bridgeadaptclip_v13_losses import signed_error_correction_loss
 from tools.bridgeadaptclip_v14_losses import final_logit_margin_loss
 from tools.bridgeadaptclip_v15_losses import hard_pixel_ranking_loss
 from tools.bridgeadaptclip_v16_losses import skeleton_balanced_hard_pixel_ranking_loss
+from tools.bridgeadaptclip_v17_losses import positive_prioritized_ranking_loss
 
 
 def _freeze(module):
@@ -31,6 +32,10 @@ def train(args):
     if args.physical_batch_size * args.gradient_accumulation_steps != args.effective_batch_size:
         raise ValueError(
             'physical_batch_size * gradient_accumulation_steps must equal effective_batch_size'
+        )
+    if args.positive_prioritized_ranking and args.skeleton_balanced_ranking:
+        raise ValueError(
+            'positive_prioritized_ranking and skeleton_balanced_ranking are mutually exclusive'
         )
     os.makedirs(args.save_path, exist_ok=True)
     model_slug = args.model_name.lower().replace('-', '').replace('.', '')
@@ -60,7 +65,7 @@ def train(args):
         BridgeAdaptCLIPV12
         if args.checkpoint_state_key in (
             'bridgeadaptclip_v12', 'bridgeadaptclip_v13', 'bridgeadaptclip_v14',
-            'bridgeadaptclip_v15', 'bridgeadaptclip_v16'
+            'bridgeadaptclip_v15', 'bridgeadaptclip_v16', 'bridgeadaptclip_v17'
         )
         else BridgeAdaptCLIPV11
     )
@@ -139,6 +144,8 @@ def train(args):
             'margin_loss': [], 'fn_margin_loss': [], 'fp_margin_loss': [],
             'weighted_margin_loss': [],
             'ranking_loss': [], 'weighted_ranking_loss': [],
+            'raise_positive_ranking_loss': [],
+            'suppress_negative_ranking_loss': [],
             'global_ranking_loss': [], 'thin_ranking_loss': [],
             'hard_positive_logit': [], 'hard_negative_logit': [],
             'thin_positive_logit': [], 'selected_skeleton_count': [],
@@ -200,7 +207,26 @@ def train(args):
                         margin=args.margin,
                     )
                 )
-                if args.skeleton_balanced_ranking:
+                if args.positive_prioritized_ranking:
+                    (
+                        ranking_loss,
+                        raise_positive_ranking_loss,
+                        suppress_negative_ranking_loss,
+                        hard_positive_logit,
+                        hard_negative_logit,
+                        ranking_valid_images,
+                    ) = positive_prioritized_ranking_loss(
+                        output['mask_logits'],
+                        target_mask,
+                        hard_positive_count=args.hard_positive_count,
+                        hard_negative_count=args.hard_negative_count,
+                        raise_positive_weight=args.raise_positive_weight,
+                    )
+                    global_ranking_loss = ranking_loss
+                    thin_ranking_loss = ranking_loss
+                    thin_positive_logit = hard_positive_logit
+                    selected_skeleton_count = ranking_loss.detach() * 0.0
+                elif args.skeleton_balanced_ranking:
                     (
                         ranking_loss,
                         global_ranking_loss,
@@ -232,6 +258,11 @@ def train(args):
                     thin_ranking_loss = ranking_loss
                     thin_positive_logit = hard_positive_logit
                     selected_skeleton_count = ranking_loss.detach() * 0.0
+                    raise_positive_ranking_loss = ranking_loss
+                    suppress_negative_ranking_loss = ranking_loss
+                if args.skeleton_balanced_ranking:
+                    raise_positive_ranking_loss = ranking_loss
+                    suppress_negative_ranking_loss = ranking_loss
                 weighted_gate_loss = args.gate_loss_weight * gate_loss
                 weighted_preserve_loss = args.preserve_loss_weight * preserve_loss
                 weighted_signed_loss = args.signed_correction_loss_weight * signed_loss
@@ -276,6 +307,12 @@ def train(args):
                 float(weighted_margin_loss.detach())
             )
             loss_records['ranking_loss'].append(float(ranking_loss.detach()))
+            loss_records['raise_positive_ranking_loss'].append(
+                float(raise_positive_ranking_loss.detach())
+            )
+            loss_records['suppress_negative_ranking_loss'].append(
+                float(suppress_negative_ranking_loss.detach())
+            )
             loss_records['global_ranking_loss'].append(
                 float(global_ranking_loss.detach())
             )
@@ -319,6 +356,8 @@ def train(args):
             'fn_margin_loss=%.6f, fp_margin_loss=%.6f, '
             'weighted_margin_loss=%.6f, mean_gate=%.6f, '
             'ranking_loss=%.6f, weighted_ranking_loss=%.6f, '
+            'raise_positive_ranking_loss=%.6f, '
+            'suppress_negative_ranking_loss=%.6f, '
             'global_ranking_loss=%.6f, thin_ranking_loss=%.6f, '
             'hard_positive_logit=%.6f, thin_positive_logit=%.6f, '
             'hard_negative_logit=%.6f, selected_skeleton_count=%.3f, '
@@ -343,6 +382,8 @@ def train(args):
             np.mean(loss_records['mean_gate']),
             np.mean(loss_records['ranking_loss']),
             np.mean(loss_records['weighted_ranking_loss']),
+            np.mean(loss_records['raise_positive_ranking_loss']),
+            np.mean(loss_records['suppress_negative_ranking_loss']),
             np.mean(loss_records['global_ranking_loss']),
             np.mean(loss_records['thin_ranking_loss']),
             np.mean(loss_records['hard_positive_logit']),
@@ -384,12 +425,18 @@ def train(args):
                 'margin': args.margin,
                 'margin_loss_weight': args.margin_loss_weight,
                 'hard_pixel_ranking_loss': (
+                    'positive-prioritized stop-gradient routing on final '
+                    'output[mask_logits]'
+                    if args.positive_prioritized_ranking else
                     'mean_image mean_pair softplus(Z_hard_negative - '
                     'Z_hard_positive) on final output[mask_logits]'
                 ),
                 'hard_positive_count_per_image': args.hard_positive_count,
                 'hard_negative_count_per_image': args.hard_negative_count,
                 'ranking_loss_weight': args.ranking_loss_weight,
+                'positive_prioritized_ranking': args.positive_prioritized_ranking,
+                'raise_positive_weight': args.raise_positive_weight,
+                'suppress_negative_weight': 1.0 - args.raise_positive_weight,
                 'skeleton_balanced_ranking': args.skeleton_balanced_ranking,
                 'skeletonization': 'skimage.morphology.skeletonize(binary_GT)',
                 'global_positive_count_per_image': args.global_positive_count,
@@ -425,8 +472,17 @@ def train(args):
         'margin': args.margin,
         'margin_supervision': 'final output[mask_logits]',
         'hard_pixel_ranking_supervision': 'final output[mask_logits]',
+        'hard_pixel_ranking_formula': (
+            'w*softplus(stopgrad(Zn)-Zp) + '
+            '(1-w)*softplus(Zn-stopgrad(Zp))'
+            if args.positive_prioritized_ranking else
+            'softplus(Zn-Zp)'
+        ),
         'hard_positive_count_per_image': args.hard_positive_count,
         'hard_negative_count_per_image': args.hard_negative_count,
+        'positive_prioritized_ranking': args.positive_prioritized_ranking,
+        'raise_positive_weight': args.raise_positive_weight,
+        'suppress_negative_weight': 1.0 - args.raise_positive_weight,
         'skeleton_balanced_ranking': args.skeleton_balanced_ranking,
         'skeletonization': 'skimage.morphology.skeletonize(binary_GT)',
         'global_positive_count_per_image': args.global_positive_count,
@@ -476,6 +532,8 @@ def build_parser():
     parser.add_argument('--ranking_loss_weight', type=float, default=0.0)
     parser.add_argument('--hard_positive_count', type=int, default=256)
     parser.add_argument('--hard_negative_count', type=int, default=256)
+    parser.add_argument('--positive_prioritized_ranking', action='store_true')
+    parser.add_argument('--raise_positive_weight', type=float, default=0.8)
     parser.add_argument('--skeleton_balanced_ranking', action='store_true')
     parser.add_argument('--global_positive_count', type=int, default=128)
     parser.add_argument('--skeleton_positive_count', type=int, default=128)
