@@ -10,7 +10,8 @@ from tqdm import tqdm
 
 import adaptcliplib
 from adaptcliplib import (
-    BridgeAdaptCLIPV12, BridgeAdaptCLIPV20, TextualAdapter, VisualAdapter,
+    BridgeAdaptCLIPV12, BridgeAdaptCLIPV20, BridgeAdaptCLIPV21Fine,
+    TextualAdapter, VisualAdapter,
 )
 from dataset import BridgeDualResolutionDataset
 from tools import get_logger, get_transform, setup_seed
@@ -47,7 +48,12 @@ def train(args):
     _freeze(textual)
     _freeze(visual)
 
-    fine_model = BridgeAdaptCLIPV12(
+    fine_class = (
+        BridgeAdaptCLIPV21Fine
+        if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
+        else BridgeAdaptCLIPV12
+    )
+    fine_model = fine_class(
         semantic_channels=768, fusion_channels=args.fusion_channels,
         structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
         structural_input_size=args.structural_input_size,
@@ -122,7 +128,12 @@ def train(args):
                     metric_resolution=args.structural_input_size, device=device,
                 )
                 with torch.cuda.amp.autocast(enabled=amp_enabled):
-                    fine_output = fine_model(visual_patch, row0_probability, structural)
+                    if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                        fine_output = fine_model(
+                            visual_patch, patch_features, row0_probability, structural
+                        )
+                    else:
+                        fine_output = fine_model(visual_patch, row0_probability, structural)
             with torch.cuda.amp.autocast(enabled=amp_enabled):
                 output = broad_model(
                     fine_output['joint_feature'], fine_output['mask_logits'], row0_probability
@@ -175,19 +186,20 @@ def train(args):
             'epoch': epoch, 'config': vars(args), 'row0_checkpoint_sha256': row0_sha,
             'fine_checkpoint_sha256': fine_sha, 'fine_checkpoint_epoch': fine_checkpoint.get('epoch'),
             'architecture': {
-                'model_name': 'BridgeAdaptCLIP-v2.0', 'fine_base': 'frozen v1.3 Epoch 3',
+                'model_name': args.model_name,
+                'fine_base': f'frozen {args.fine_checkpoint_state_key}',
                 'fusion': 'Z_final = Z_fine - sigmoid(A_b)*softplus(R_b)',
                 'broad_feature_size': args.structural_input_size // 8,
                 'broad_correction_constraint': 'non-positive',
             },
-            'bridgeadaptclip_v20': broad_model.state_dict(),
+            args.checkpoint_state_key: broad_model.state_dict(),
         }
         torch.save(checkpoint, os.path.join(args.save_path, f'epoch_{epoch}.pth'))
         if args.max_train_steps and global_step >= args.max_train_steps: break
 
     with open(os.path.join(args.save_path, 'training_metadata.json'), 'w', encoding='utf-8') as handle:
         json.dump({
-            'model_name': 'BridgeAdaptCLIP-v2.0', 'optimizer': 'Adam',
+            'model_name': args.model_name, 'optimizer': 'Adam',
             'optimizer_betas': [0.5, 0.999], 'learning_rate': args.learning_rate,
             'fine_base_frozen': True, 'row0_checkpoint_sha256': row0_sha,
             'fine_checkpoint_sha256': fine_sha, 'loss_weights': {
@@ -205,6 +217,8 @@ def build_parser():
     parser.add_argument('--save_path', required=True)
     parser.add_argument('--row0_checkpoint_path', required=True)
     parser.add_argument('--fine_checkpoint_path', required=True)
+    parser.add_argument('--model_name', default='BridgeAdaptCLIP-v2.0')
+    parser.add_argument('--checkpoint_state_key', default='bridgeadaptclip_v20')
     parser.add_argument('--fine_checkpoint_state_key', default='bridgeadaptclip_v13')
     parser.add_argument('--pretrained_model', default='ViT-L/14@336px')
     parser.add_argument('--features_list', type=int, nargs='+', default=[6,12,18,24])

@@ -17,11 +17,29 @@ def load_module(name, relative_path):
 MODEL = load_module('bridgeadaptclip_v20_standalone', 'adaptcliplib/bridgeadaptclip.py')
 LOSSES = load_module('bridgeadaptclip_v20_losses_standalone', 'tools/bridgeadaptclip_v20_losses.py')
 BridgeAdaptCLIPV20 = MODEL.BridgeAdaptCLIPV20
+BridgeAdaptCLIPV21Fine = MODEL.BridgeAdaptCLIPV21Fine
 broad_gate_and_positive_preservation_losses = LOSSES.broad_gate_and_positive_preservation_losses
 negative_only_broad_ranking_loss = LOSSES.negative_only_broad_ranking_loss
 
 
 class BridgeAdaptCLIPV20Tests(unittest.TestCase):
+    def test_v21_fine_output_is_accepted_by_unchanged_broad_head(self):
+        fine = BridgeAdaptCLIPV21Fine(
+            semantic_channels=8, fusion_channels=8, structural_channels=8,
+            structural_input_size=32,
+        )
+        broad = BridgeAdaptCLIPV20(joint_channels=8, broad_channels=8, output_size=32)
+        visual = torch.randn(1, 8, 37, 37)
+        levels = [torch.randn(1, 1370, 8) for _ in range(4)]
+        row0 = torch.rand(1, 1, 32, 32) * 0.8 + 0.1
+        structural = torch.randn(1, 3, 32, 32)
+        fine_output = fine(visual, levels, row0, structural)
+        output = broad(
+            fine_output['joint_feature'], fine_output['mask_logits'], row0
+        )
+        self.assertEqual(output['mask_logits'].shape, (1, 1, 32, 32))
+        self.assertTrue(torch.all(output['broad_correction'] <= 0))
+
     def test_identity_initialization_and_non_positive_correction(self):
         model = BridgeAdaptCLIPV20(joint_channels=8, broad_channels=8, output_size=32)
         joint = torch.randn(2, 8, 8, 8)

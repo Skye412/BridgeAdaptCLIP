@@ -10,7 +10,10 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import adaptcliplib
-from adaptcliplib import BridgeAdaptCLIPV12, BridgeAdaptCLIPV20, TextualAdapter, VisualAdapter
+from adaptcliplib import (
+    BridgeAdaptCLIPV12, BridgeAdaptCLIPV20, BridgeAdaptCLIPV21Fine,
+    TextualAdapter, VisualAdapter,
+)
 from dataset import BridgeDualResolutionDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed
 from tools.bridge_class_metrics import evaluate_bridge_classes
@@ -37,7 +40,12 @@ def evaluate(args):
     row0_checkpoint = torch.load(args.row0_checkpoint_path, map_location='cpu')
     textual.load_state_dict(row0_checkpoint['textual_learner'])
     visual.load_state_dict(row0_checkpoint['visual_learner']); _freeze(textual); _freeze(visual)
-    fine_model = BridgeAdaptCLIPV12(
+    fine_class = (
+        BridgeAdaptCLIPV21Fine
+        if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
+        else BridgeAdaptCLIPV12
+    )
+    fine_model = fine_class(
         semantic_channels=768, fusion_channels=args.fusion_channels,
         structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
         structural_input_size=args.structural_input_size,
@@ -50,7 +58,7 @@ def evaluate(args):
         output_size=args.structural_input_size,
     )
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
-    broad_model.load_state_dict(checkpoint['bridgeadaptclip_v20']); _freeze(broad_model)
+    broad_model.load_state_dict(checkpoint[args.checkpoint_state_key]); _freeze(broad_model)
     if checkpoint.get('row0_checkpoint_sha256') != file_sha256(args.row0_checkpoint_path):
         raise ValueError('Row-0 checkpoint hash mismatch')
     if checkpoint.get('fine_checkpoint_sha256') != file_sha256(args.fine_checkpoint_path):
@@ -103,7 +111,12 @@ def evaluate(args):
             )
             image_score = row0_image_score(gv, gt, smoothed)
             with torch.cuda.amp.autocast(enabled=amp_enabled):
-                fine_output = fine_model(visual_patch, row0_probability, structural)
+                if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                    fine_output = fine_model(
+                        visual_patch, patch_features, row0_probability, structural
+                    )
+                else:
+                    fine_output = fine_model(visual_patch, row0_probability, structural)
                 output = broad_model(
                     fine_output['joint_feature'], fine_output['mask_logits'], row0_probability
                 )
@@ -206,10 +219,10 @@ def evaluate(args):
             logger.info('%s: P-AP=%.6f', defect, report['metrics_percent']['P-AP'])
     report = {
         'protocol': {
-            'protocol_id':'bridge2893-eval-v2', 'model_name':'BridgeAdaptCLIP-v2.0',
+            'protocol_id':'bridge2893-eval-v2', 'model_name':args.model_name,
             'model_input_size':args.model_input_size, 'structural_input_size':args.structural_input_size,
             'metric_resolution':args.metric_resolution, 'reference_count':0,
-            'fine_base':'frozen_bridgeadaptclip_v13_epoch3',
+            'fine_base':f'frozen_{args.fine_checkpoint_state_key}',
             'fine_checkpoint_path':args.fine_checkpoint_path,
             'checkpoint_path':args.checkpoint_path, 'image_score_policy':'exact_frozen_row0',
             'prediction_type':'fine_logits_plus_non_positive_broad_correction',
@@ -226,6 +239,8 @@ def build_parser():
     p=argparse.ArgumentParser('BridgeAdaptCLIP-v2.0 evaluation')
     for name in ('test_data_path','checkpoint_path','row0_checkpoint_path','fine_checkpoint_path','save_path'):
         p.add_argument('--'+name, required=True)
+    p.add_argument('--model_name',default='BridgeAdaptCLIP-v2.0')
+    p.add_argument('--checkpoint_state_key',default='bridgeadaptclip_v20')
     p.add_argument('--fine_checkpoint_state_key',default='bridgeadaptclip_v13')
     p.add_argument('--pretrained_model',default='ViT-L/14@336px')
     p.add_argument('--features_list',type=int,nargs='+',default=[6,12,18,24])

@@ -18,3 +18,10 @@ otherwise unchanged.
 Phase 1 trains 15 epochs and selects one checkpoint using overall Validation
 native-1024 P-AP. It intentionally does not evaluate Test. BridgeAdaptCLIP-v2.0
 remains the frozen stable model until the validation gate authorizes Phase 2.
+
+The validation-selected checkpoint is Epoch 9 (P-AP 76.900672). Relative to
+the v1.3 Fine validation reference, it improves overall P-AP by 0.079339,
+macro diagnostic P-AP by 3.984756, Crack by 9.019956, Spalling by 3.597527,
+and Corrosion by 4.493920, while Efflorescence decreases by 1.172379. This
+satisfies the predeclared Phase-2 admission rule. Phase 2 freezes this Fine
+checkpoint and retrains the unchanged v2.0 Broad Head from initialization.
