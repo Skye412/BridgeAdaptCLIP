@@ -428,20 +428,30 @@ class MultiLevelSemanticGuidance(nn.Module):
             spatial.shape[0], spatial.shape[2], side, side
         )
 
-    def forward(self, base_feature, patch_features):
+    def forward(self, base_feature, patch_features, active_branch_indices=None):
         if len(patch_features) != self.shallow_levels + 1:
             raise ValueError(
                 f'Expected {self.shallow_levels + 1} CLIP levels, got {len(patch_features)}'
             )
+        if active_branch_indices is None:
+            active_branch_indices = set(range(self.shallow_levels))
+        else:
+            active_branch_indices = set(active_branch_indices)
+        invalid = active_branch_indices.difference(range(self.shallow_levels))
+        if invalid:
+            raise ValueError(f'Invalid shallow branch indices: {sorted(invalid)}')
         fused = base_feature
         residuals = []
         expected_grid = base_feature.shape[-2:]
-        for branch, tokens in zip(self.branches, patch_features[:-1]):
+        for branch_index, (branch, tokens) in enumerate(
+            zip(self.branches, patch_features[:-1])
+        ):
             grid = self.tokens_to_grid(tokens.detach().float())
             if grid.shape[1] != self.input_channels or grid.shape[-2:] != expected_grid:
                 raise ValueError('All CLIP levels must match the deep 37x37 feature grid')
             residual = branch(F.normalize(grid, dim=1))
-            fused = fused + residual
+            if branch_index in active_branch_indices:
+                fused = fused + residual
             residuals.append(residual)
         return fused, residuals
 
@@ -458,15 +468,30 @@ class BridgeAdaptCLIPV21Fine(BridgeAdaptCLIPV12):
             shallow_levels=3,
         )
 
-    def forward(self, visual_patch_feature, patch_features, row0_probability, structural_image):
+    def forward(
+        self, visual_patch_feature, patch_features, row0_probability,
+        structural_image, active_shallow_levels=None,
+    ):
         expected_size = (self.structural_input_size, self.structural_input_size)
         if structural_image.shape[-2:] != expected_size:
             raise ValueError('Structural image has an unexpected spatial size')
         if row0_probability.shape[-2:] != expected_size or row0_probability.shape[1] != 1:
             raise ValueError('Row-0 probability has an unexpected shape')
         base_semantic = self.semantic_projection(visual_patch_feature)
+        if active_shallow_levels is None:
+            active_branch_indices = None
+        else:
+            shallow_levels = self.clip_feature_levels[:-1]
+            unknown = set(active_shallow_levels).difference(shallow_levels)
+            if unknown:
+                raise ValueError(f'Unknown shallow CLIP levels: {sorted(unknown)}')
+            active_branch_indices = [
+                index for index, level in enumerate(shallow_levels)
+                if level in active_shallow_levels
+            ]
         semantic_feature, level_residuals = self.multi_level_guidance(
-            base_semantic, patch_features
+            base_semantic, patch_features,
+            active_branch_indices=active_branch_indices,
         )
         structural_feature = self.degconv_lite(self.structural_stem(structural_image))
         semantic_up = F.interpolate(
@@ -510,6 +535,10 @@ class BridgeAdaptCLIPV21Fine(BridgeAdaptCLIPV12):
             'semantic_feature': semantic_feature,
             'base_semantic_feature': base_semantic,
             'multi_level_residuals': level_residuals,
+            'active_shallow_levels': (
+                self.clip_feature_levels[:-1]
+                if active_shallow_levels is None else tuple(active_shallow_levels)
+            ),
             'semantic_up': semantic_up,
             'structural_feature': structural_feature,
             'joint_feature': joint_feature,

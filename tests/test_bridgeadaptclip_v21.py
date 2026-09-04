@@ -78,5 +78,25 @@ class BridgeAdaptCLIPV21FineTests(unittest.TestCase):
         self.assertTrue(torch.equal(image_score, before))
         self.assertFalse(any('image' in name for name, _ in model.named_parameters()))
 
+    def test_inference_level_switches_disable_only_requested_residuals(self):
+        model = BridgeAdaptCLIPV21Fine(
+            semantic_channels=8, fusion_channels=8, structural_channels=8,
+            structural_input_size=32,
+        )
+        with torch.no_grad():
+            for branch in model.multi_level_guidance.branches:
+                branch[-1].weight.fill_(0.1)
+        inputs = self.make_inputs()
+        all_levels = model(*inputs)
+        only_six = model(*inputs, active_shallow_levels=[6])
+        expected = (
+            all_levels['base_semantic_feature']
+            + all_levels['multi_level_residuals'][0]
+        )
+        self.assertTrue(torch.allclose(only_six['semantic_feature'], expected))
+        self.assertEqual(only_six['active_shallow_levels'], (6,))
+        with self.assertRaises(ValueError):
+            model(*inputs, active_shallow_levels=[24])
+
 
 if __name__ == '__main__': unittest.main()

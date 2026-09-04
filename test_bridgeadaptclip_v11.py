@@ -17,6 +17,7 @@ from adaptcliplib import (
 from dataset import BridgeDualResolutionDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed
 from tools.bridge_class_metrics import evaluate_bridge_classes
+from tools.bridge_masks import DEFECT_NAMES, decode_bridge_class_masks
 from tools.bridge_row0 import (
     file_sha256,
     resize_row0_probability,
@@ -122,6 +123,12 @@ def evaluate(args):
     gate_sum = 0.0
     residual_sum = 0.0
     pixel_count = 0
+    level_norm_sums = None
+    level_norm_count = 0
+    class_level_norm_sums = {
+        defect: None for defect in DEFECT_NAMES
+    }
+    class_level_norm_counts = {defect: 0 for defect in DEFECT_NAMES}
 
     for items in tqdm(loader):
         clip_image = items['img'].to(device, non_blocking=True)
@@ -158,6 +165,7 @@ def evaluate(args):
                 output = bridge_model(
                     visual_patch_feature, patch_features,
                     row0_probability, structural_image,
+                    active_shallow_levels=args.active_shallow_levels,
                 )
             else:
                 output = bridge_model(
@@ -170,6 +178,32 @@ def evaluate(args):
         gate_sum += float(output['gate'].float().sum())
         residual_sum += float(output['gated_residual'].float().abs().sum())
         pixel_count += output['gate'].numel()
+
+        if args.checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+            base_norm = output['base_semantic_feature'].float().flatten(1).norm(
+                dim=1
+            ).clamp_min(1e-12)
+            ratios = torch.stack([
+                residual.float().flatten(1).norm(dim=1) / base_norm
+                for residual in output['multi_level_residuals']
+            ], dim=1).cpu().numpy()
+            batch_sum = ratios.sum(axis=0)
+            level_norm_sums = (
+                batch_sum if level_norm_sums is None
+                else level_norm_sums + batch_sum
+            )
+            level_norm_count += ratios.shape[0]
+            for sample_index, image_path in enumerate(items['img_path']):
+                if os.path.basename(os.path.dirname(str(image_path))) == 'normal':
+                    continue
+                class_masks, _ = decode_bridge_class_masks(str(image_path))
+                for defect, class_mask in class_masks.items():
+                    if class_mask.any():
+                        if class_level_norm_sums[defect] is None:
+                            class_level_norm_sums[defect] = ratios[sample_index].copy()
+                        else:
+                            class_level_norm_sums[defect] += ratios[sample_index]
+                        class_level_norm_counts[defect] += 1
 
         records['sample_ids'].append(np.asarray(items['sample_id']))
         records['cls_names'].append(np.asarray(items['cls_name']))
@@ -219,6 +253,35 @@ def evaluate(args):
                         report['metrics_percent']['P-AP'],
                         report['metrics_percent']['P-F1max'])
 
+    multi_level_diagnostics = None
+    if level_norm_sums is not None:
+        level_names = [str(level) for level in args.features_list[:-1]]
+        multi_level_diagnostics = {
+            'active_shallow_levels': (
+                args.features_list[:-1]
+                if args.active_shallow_levels is None
+                else args.active_shallow_levels
+            ),
+            'relative_l2_norm_overall': {
+                level: float(value / level_norm_count)
+                for level, value in zip(level_names, level_norm_sums)
+            },
+            'relative_l2_norm_by_defect_image': {
+                defect: {
+                    level: float(value / max(class_level_norm_counts[defect], 1))
+                    for level, value in zip(
+                        level_names,
+                        class_level_norm_sums[defect]
+                        if class_level_norm_sums[defect] is not None
+                        else np.zeros(len(level_names)),
+                    )
+                }
+                for defect in DEFECT_NAMES
+            },
+            'defect_image_counts': class_level_norm_counts,
+        }
+        logger.info('multi-level diagnostics: %s', multi_level_diagnostics)
+
     report = {
         'protocol': {
             'protocol_id': 'bridge2893-eval-v2',
@@ -241,6 +304,7 @@ def evaluate(args):
             'mean_gate': gate_sum / pixel_count,
             'mean_abs_gated_residual': residual_sum / pixel_count,
         },
+        'multi_level_diagnostics': multi_level_diagnostics,
     }
     with open(os.path.join(args.save_path, 'bridge2893_10seed_0shot_metrics.json'), 'w', encoding='utf-8') as output:
         json.dump(report, output, indent=2)
@@ -276,6 +340,10 @@ def build_parser():
     parser.add_argument('--pixel_thresholds', type=int, default=2048)
     parser.add_argument('--pro_thresholds', type=int, default=256)
     parser.add_argument('--bridge_class_metrics', action='store_true')
+    parser.add_argument(
+        '--active_shallow_levels', type=int, nargs='*', default=None,
+        help='Inference-only subset of shallow CLIP levels 6, 12, and 18.',
+    )
     parser.add_argument('--amp', action='store_true')
     return parser
 
