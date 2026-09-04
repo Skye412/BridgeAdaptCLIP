@@ -104,7 +104,7 @@ class FrozenTilePredictor:
         tensor = TF.pil_to_tensor(image).float().div_(255.0)
         return TF.normalize(tensor, mean=IMAGENET_MEAN, std=IMAGENET_STD)
 
-    def __call__(self, images: list[Image.Image]) -> np.ndarray:
+    def predict_outputs(self, images: list[Image.Image]) -> dict[str, np.ndarray]:
         clip_images = torch.stack([self.clip_transform(image) for image in images]).to(
             self.device, non_blocking=True
         )
@@ -126,6 +126,7 @@ class FrozenTilePredictor:
             )
             if self.args.model == "row0":
                 probability = row0_probability[:, 0]
+                outputs = {"probability": probability}
             else:
                 structural = torch.stack([
                     self._structural_tensor(image) for image in images
@@ -149,9 +150,32 @@ class FrozenTilePredictor:
                     else:
                         logits = fine_output["mask_logits"]
                 probability = torch.sigmoid(logits.float())[:, 0]
-        return torch.nan_to_num(
-            probability.float(), nan=0.0, posinf=1.0, neginf=0.0
-        ).cpu().numpy()
+                outputs = {
+                    "probability": probability,
+                    "row0_probability": row0_probability[:, 0],
+                    "fine_probability": torch.sigmoid(
+                        fine_output["mask_logits"].float()
+                    )[:, 0],
+                    "fine_correction": (
+                        fine_output["mask_logits"].float()
+                        - fine_output["row0_logits"].float()
+                    )[:, 0],
+                }
+                if self.broad is not None:
+                    outputs["broad_correction"] = broad_output[
+                        "broad_correction"
+                    ].float()[:, 0]
+        return {
+            name: torch.nan_to_num(
+                value.float(), nan=0.0,
+                posinf=(1.0 if "probability" in name else 0.0),
+                neginf=0.0,
+            ).cpu().numpy()
+            for name, value in outputs.items()
+        }
+
+    def __call__(self, images: list[Image.Image]) -> np.ndarray:
+        return self.predict_outputs(images)["probability"]
 
 
 def write_json(path, payload):

@@ -338,3 +338,72 @@ def sliding_window_probability(
     if np.any(weight_sum <= 0):
         raise RuntimeError("Sliding-window stitching left uncovered pixels")
     return (weighted_sum / weight_sum)[:height, :width]
+
+
+def sliding_window_outputs(
+    image: Image.Image,
+    predict_tiles,
+    tile_size: int = 1024,
+    stride: int = 768,
+    tile_batch_size: int = 1,
+    edge_width: int = 128,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Hann-stitch multiple tile outputs and return frozen geometry masks."""
+    if edge_width <= 0 or edge_width * 2 >= tile_size:
+        raise ValueError("edge_width must be between zero and half the tile size")
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    pad_bottom, pad_right = max(0, tile_size - height), max(0, tile_size - width)
+    if pad_bottom or pad_right:
+        rgb = np.pad(rgb, ((0, pad_bottom), (0, pad_right), (0, 0)), mode="edge")
+    padded_height, padded_width = rgb.shape[:2]
+    starts = [
+        (top, left)
+        for top in tile_starts(padded_height, tile_size, stride)
+        for left in tile_starts(padded_width, tile_size, stride)
+    ]
+    weight = hann_weight(tile_size)
+    local_edge = np.ones((tile_size, tile_size), dtype=bool)
+    local_edge[edge_width:-edge_width, edge_width:-edge_width] = False
+    edge_weight = weight * local_edge
+    center_weight = weight * ~local_edge
+    weighted_sums = {}
+    weight_sum = np.zeros((padded_height, padded_width), dtype=np.float32)
+    edge_weight_sum = np.zeros_like(weight_sum)
+    center_weight_sum = np.zeros_like(weight_sum)
+    coverage = np.zeros((padded_height, padded_width), dtype=np.uint8)
+    for offset in range(0, len(starts), tile_batch_size):
+        batch_starts = starts[offset:offset + tile_batch_size]
+        tiles = [
+            Image.fromarray(rgb[top:top + tile_size, left:left + tile_size])
+            for top, left in batch_starts
+        ]
+        batch_outputs = predict_tiles(tiles)
+        for name, values in batch_outputs.items():
+            values = np.asarray(values, dtype=np.float32)
+            if values.shape != (len(tiles), tile_size, tile_size):
+                raise ValueError(f"Unexpected {name} tile shape {values.shape}")
+            if name not in weighted_sums:
+                weighted_sums[name] = np.zeros_like(weight_sum)
+            for value, (top, left) in zip(values, batch_starts):
+                weighted_sums[name][top:top + tile_size, left:left + tile_size] += value * weight
+        for top, left in batch_starts:
+            region = np.s_[top:top + tile_size, left:left + tile_size]
+            weight_sum[region] += weight
+            edge_weight_sum[region] += edge_weight
+            center_weight_sum[region] += center_weight
+            coverage[region] += 1
+    if np.any(weight_sum <= 0):
+        raise RuntimeError("Sliding-window stitching left uncovered pixels")
+    outputs = {}
+    for name, values in weighted_sums.items():
+        values /= weight_sum
+        outputs[name] = values[:height, :width]
+    geometry = {
+        "overlap": (coverage > 1)[:height, :width],
+        "non_overlap": (coverage == 1)[:height, :width],
+        "edge_dominated": (edge_weight_sum > center_weight_sum)[:height, :width],
+        "center_dominated": (edge_weight_sum <= center_weight_sum)[:height, :width],
+        "padded_image": np.asarray(bool(pad_bottom or pad_right)),
+    }
+    return outputs, geometry

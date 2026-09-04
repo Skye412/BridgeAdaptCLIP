@@ -14,6 +14,7 @@ from tools.dacl10k_external import (
     hann_weight,
     rasterize_damage_labels,
     sliding_window_probability,
+    sliding_window_outputs,
     tile_starts,
 )
 
@@ -86,6 +87,22 @@ class DACL10KExternalTests(unittest.TestCase):
         result = sliding_window_probability(image, predict)
         self.assertEqual(result.shape, (700, 1300))
         self.assertTrue(np.allclose(result, 0.37, atol=1e-6))
+
+    def test_multi_output_stitching_and_geometry_partition(self):
+        image = Image.fromarray(np.zeros((1024, 1800, 3), dtype=np.uint8))
+
+        def predict(tiles):
+            shape = (len(tiles), 1024, 1024)
+            return {
+                "probability": np.full(shape, 0.2, dtype=np.float32),
+                "fine_correction": np.full(shape, -1.5, dtype=np.float32),
+            }
+
+        outputs, geometry = sliding_window_outputs(image, predict)
+        self.assertTrue(np.allclose(outputs["probability"], 0.2, atol=1e-6))
+        self.assertTrue(np.allclose(outputs["fine_correction"], -1.5, atol=1e-5))
+        self.assertTrue(np.all(geometry["overlap"] ^ geometry["non_overlap"]))
+        self.assertTrue(np.all(geometry["edge_dominated"] ^ geometry["center_dominated"]))
 
 
 if __name__ == "__main__":
