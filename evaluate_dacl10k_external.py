@@ -63,7 +63,10 @@ class FrozenTilePredictor:
         self.fine = None
         self.broad = None
         if args.model != "row0":
-            fine_class = BridgeAdaptCLIPV21Fine if args.model == "v21" else BridgeAdaptCLIPV12
+            fine_class = (
+                BridgeAdaptCLIPV21Fine
+                if args.model in ("fine21", "v21") else BridgeAdaptCLIPV12
+            )
             self.fine = fine_class(
                 semantic_channels=768,
                 fusion_channels=args.fusion_channels,
@@ -75,21 +78,23 @@ class FrozenTilePredictor:
             fine_checkpoint = torch.load(args.fine_checkpoint, map_location="cpu")
             self.fine.load_state_dict(fine_checkpoint[args.fine_state_key])
             freeze(self.fine)
-            self.broad = BridgeAdaptCLIPV20(
-                joint_channels=args.fusion_channels,
-                broad_channels=args.broad_channels,
-                output_size=args.tile_size,
-            )
-            broad_checkpoint = torch.load(args.broad_checkpoint, map_location="cpu")
-            self.broad.load_state_dict(broad_checkpoint[args.broad_state_key])
-            freeze(self.broad)
+            if args.model in ("v20", "v21"):
+                self.broad = BridgeAdaptCLIPV20(
+                    joint_channels=args.fusion_channels,
+                    broad_channels=args.broad_channels,
+                    output_size=args.tile_size,
+                )
+                broad_checkpoint = torch.load(args.broad_checkpoint, map_location="cpu")
+                self.broad.load_state_dict(broad_checkpoint[args.broad_state_key])
+                freeze(self.broad)
 
         self.clip_model.to(self.device)
         self.textual.to(self.device)
         self.visual.to(self.device)
         if self.fine is not None:
             self.fine.to(self.device)
-            self.broad.to(self.device)
+            if self.broad is not None:
+                self.broad.to(self.device)
         self.textual.prepare_static_text_feature(self.clip_model)
         with torch.no_grad():
             prompts, tokens = self.textual()
@@ -126,7 +131,7 @@ class FrozenTilePredictor:
                     self._structural_tensor(image) for image in images
                 ]).to(self.device, non_blocking=True)
                 with torch.cuda.amp.autocast(enabled=self.amp_enabled):
-                    if self.args.model == "v21":
+                    if self.args.model in ("fine21", "v21"):
                         fine_output = self.fine(
                             visual_patch, patch_features, row0_probability, structural
                         )
@@ -134,12 +139,16 @@ class FrozenTilePredictor:
                         fine_output = self.fine(
                             visual_patch, row0_probability, structural
                         )
-                    broad_output = self.broad(
-                        fine_output["joint_feature"],
-                        fine_output["mask_logits"],
-                        row0_probability,
-                    )
-                probability = torch.sigmoid(broad_output["mask_logits"].float())[:, 0]
+                    if self.broad is not None:
+                        broad_output = self.broad(
+                            fine_output["joint_feature"],
+                            fine_output["mask_logits"],
+                            row0_probability,
+                        )
+                        logits = broad_output["mask_logits"]
+                    else:
+                        logits = fine_output["mask_logits"]
+                probability = torch.sigmoid(logits.float())[:, 0]
         return torch.nan_to_num(
             probability.float(), nan=0.0, posinf=1.0, neginf=0.0
         ).cpu().numpy()
@@ -257,7 +266,10 @@ def evaluate(args):
 
 def build_parser():
     parser = argparse.ArgumentParser("DACL10K external anomaly evaluation")
-    parser.add_argument("--model", choices=("row0", "v20", "v21"), required=True)
+    parser.add_argument(
+        "--model", choices=("row0", "fine13", "v20", "fine21", "v21"),
+        required=True,
+    )
     parser.add_argument("--dataset_root", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--row0_checkpoint", required=True)
@@ -286,9 +298,11 @@ def build_parser():
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
-    if args.model != "row0" and (not args.fine_checkpoint or not args.broad_checkpoint):
-        parser.error("v20/v21 require --fine_checkpoint and --broad_checkpoint")
-    if args.model == "v21" and args.fine_state_key == "bridgeadaptclip_v13":
+    if args.model != "row0" and not args.fine_checkpoint:
+        parser.error("Fine and final models require --fine_checkpoint")
+    if args.model in ("v20", "v21") and not args.broad_checkpoint:
+        parser.error("v20/v21 require --broad_checkpoint")
+    if args.model in ("fine21", "v21") and args.fine_state_key == "bridgeadaptclip_v13":
         args.fine_state_key = "bridgeadaptclip_v21_fine"
     return args
 

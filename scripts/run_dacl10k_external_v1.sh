@@ -28,12 +28,18 @@ run_model() {
 
 case "${model}" in
   row0) run_model row0 ;;
+  fine13) run_model fine13 --fine_checkpoint "${v13_fine}" --fine_state_key bridgeadaptclip_v13 ;;
   v20) run_model v20 --fine_checkpoint "${v13_fine}" --fine_state_key bridgeadaptclip_v13 --broad_checkpoint "${v20_broad}" ;;
+  fine21) run_model fine21 --fine_checkpoint "${v21_fine}" --fine_state_key bridgeadaptclip_v21_fine ;;
   v21) run_model v21 --fine_checkpoint "${v21_fine}" --fine_state_key bridgeadaptclip_v21_fine --broad_checkpoint "${v21_broad}" --broad_state_key bridgeadaptclip_v21 ;;
+  decomposition)
+    run_model fine13 --fine_checkpoint "${v13_fine}" --fine_state_key bridgeadaptclip_v13
+    run_model fine21 --fine_checkpoint "${v21_fine}" --fine_state_key bridgeadaptclip_v21_fine
+    ;;
   all)
     run_model row0
     run_model v20 --fine_checkpoint "${v13_fine}" --fine_state_key bridgeadaptclip_v13 --broad_checkpoint "${v20_broad}"
     run_model v21 --fine_checkpoint "${v21_fine}" --fine_state_key bridgeadaptclip_v21_fine --broad_checkpoint "${v21_broad}" --broad_state_key bridgeadaptclip_v21
     ;;
-  *) echo "Usage: $0 {row0|v20|v21|all}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {row0|fine13|v20|fine21|v21|decomposition|all}" >&2; exit 2 ;;
 esac
