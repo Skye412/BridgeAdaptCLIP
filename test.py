@@ -1,6 +1,8 @@
 """Testing script for AdaptCLIP anomaly detection model."""
 
 import argparse
+import json
+import os
 import pickle
 import random
 from collections import defaultdict
@@ -16,6 +18,10 @@ import adaptcliplib
 from adaptcliplib import PQAdapter, TextualAdapter, VisualAdapter, fusion_fun
 from dataset import Dataset, PromptDataset
 from tools import Evaluator, get_logger, get_transform, setup_seed, visualizer
+from tools.bridge_class_metrics import (
+    evaluate_bridge_classes,
+)
+from tools.bridge_masks import load_bridge_native_binary_masks
 
 
 def prompt_association(image_memory, patch_memory, target_class_name):
@@ -92,7 +98,7 @@ def build_prompt_memory(model, prompt_dataloader, device, obj_list, view_list, f
 
 
 def test(args):
-    img_size = args.image_size
+    img_size = args.model_input_size
     features_list = args.features_list
     dataset_dir = args.test_data_path
     save_path = args.save_path
@@ -108,6 +114,14 @@ def test(args):
 
     log_file = f'{dataset_name}_{seed}seed_{k_shots}shot_{mode}_log.txt'
     logger = get_logger(save_path, log_file)
+    logger.info(
+        'Evaluation protocol: model_input_size=%s, metric_resolution=%s, '
+        'prediction_resize=%s, gt_source=%s',
+        img_size,
+        args.metric_resolution or img_size,
+        'bilinear_align_corners_false' if args.metric_resolution else 'none',
+        'original_native_raster' if args.metric_resolution else 'model_input_transform',
+    )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.pretrained_model == 'ViT-L/14@336px':
@@ -123,7 +137,7 @@ def test(args):
         input_dim = 640
         DPAM_layer = 10
 
-    preprocess, target_transform = get_transform(image_size=args.image_size)
+    preprocess, target_transform = get_transform(image_size=img_size)
     if dataset_name in ['Real-IAD-Variety', 'RealIAD']:
         sample_level = True
         prompt_data = PromptDataset(root=dataset_dir, transform=preprocess, target_transform=target_transform, \
@@ -185,11 +199,21 @@ def test(args):
 
 
     # ====================== Initialize Evaluation Metrics ======================
-    cpu_eva = False
+    cpu_eva = args.cpu_eval
     if cpu_eva:
-        evaluator = Evaluator('cpu', metrics=eval_metrics, sample_level=sample_level)
+        evaluator = Evaluator(
+            'cpu', metrics=eval_metrics, sample_level=sample_level,
+            pixel_thresholds=args.pixel_thresholds, pro_thresholds=args.pro_thresholds,
+        )
     else:
-        evaluator = Evaluator(device, metrics=eval_metrics, sample_level=sample_level)
+        evaluator = Evaluator(
+            device, metrics=eval_metrics, sample_level=sample_level,
+            pixel_thresholds=args.pixel_thresholds, pro_thresholds=args.pro_thresholds,
+        )
+    logger.info(
+        f'Evaluation device: {"cpu" if cpu_eva else device}; '
+        f'pixel thresholds: {args.pixel_thresholds}; PRO thresholds: {args.pro_thresholds}'
+    )
 
     # ======================Text Encoder forward ======================
     textual_learner.prepare_static_text_feature(model)
@@ -300,6 +324,19 @@ def test(args):
             anomaly_map_max, _ = torch.max(pixel_anomaly_map.view(current_batchsize, -1), dim=1)
             image_anomaly_pred = fusion_fun([global_vl_score, global_tl_score, anomaly_map_max], fusion_type = args.fusion_type)
 
+        if args.metric_resolution is not None:
+            if dataset_name != 'bridge2893':
+                raise ValueError('--metric_resolution native-GT evaluation is currently supported only for bridge2893')
+            pixel_anomaly_map = F.interpolate(
+                pixel_anomaly_map[:, None],
+                size=(args.metric_resolution, args.metric_resolution),
+                mode='bilinear',
+                align_corners=False,
+            )[:, 0]
+            gt_mask = load_bridge_native_binary_masks(
+                query_path, args.metric_resolution
+            ).to(pixel_anomaly_map.device)
+
 
         if dataset_name in ['Real-IAD-Variety', 'RealIAD', 'bmad-medical']:
             resize_mask = 256
@@ -333,6 +370,25 @@ def test(args):
     results_eval = dict(sample_ids=sample_ids, gt_masks=gt_masks, pr_masks=pr_masks, cls_names=cls_names, gt_anomalys=gt_anomalys, pr_anomalys=pr_anomalys, query_paths=query_paths)
     results_eval = {k: np.concatenate(v, axis=0) if k in ['cls_names', 'query_paths', 'sample_ids']  else torch.cat(v, dim=0) for k, v in results_eval.items()}
 
+    if args.bridge_class_metrics:
+        class_report_path = os.path.join(
+            save_path, f'bridge_defect_metrics_{seed}seed_{k_shots}shot.json'
+        )
+        class_report = evaluate_bridge_classes(
+            results_eval['query_paths'], results_eval['pr_anomalys'], results_eval['pr_masks'],
+            args.pixel_thresholds, class_report_path,
+        )
+        logger.info('\nPer-defect one-vs-normal metrics (other defect pixels ignored):')
+        for defect_name, defect_result in class_report.items():
+            metrics = defect_result['metrics_percent']
+            support = defect_result['support']
+            logger.info(
+                f'{defect_name}: positives={support["positive_images"]}, '
+                f'I-AUROC={metrics["I-AUROC"]:.1f}, I-AP={metrics["I-AP"]:.1f}, '
+                f'I-F1max={metrics["I-F1max"]:.1f}, P-AUROC={metrics["P-AUROC"]:.1f}, '
+                f'P-AP={metrics["P-AP"]:.1f}, P-F1max={metrics["P-F1max"]:.1f}'
+            )
+
 
     # save results
     msg = {}
@@ -356,6 +412,34 @@ def test(args):
     tab = tabulate(msg, headers='keys', tablefmt="pipe", floatfmt='.1f', numalign="center", stralign="center", )
     logger.info('\n' + tab)
 
+    overall_report = {
+        'protocol': {
+            'model_input_size': img_size,
+            'metric_resolution': args.metric_resolution or img_size,
+            'prediction_resize': (
+                'bilinear_align_corners_false' if args.metric_resolution else 'none'
+            ),
+            'gt_source': (
+                'original_native_raster' if args.metric_resolution else 'model_input_transform'
+            ),
+            'k_shots': k_shots,
+            'seed': seed,
+            'pixel_threshold_bins': args.pixel_thresholds,
+        },
+        'results_percent': {
+            name: {
+                metric: msg[metric][index]
+                for metric in eval_metrics
+            }
+            for index, name in enumerate(msg['Name'])
+        },
+    }
+    overall_report_path = os.path.join(
+        save_path, f'{dataset_name}_{seed}seed_{k_shots}shot_metrics.json'
+    )
+    with open(overall_report_path, 'w', encoding='utf-8') as output_file:
+        json.dump(overall_report, output_file, indent=2, ensure_ascii=False)
+
 
 
 if __name__ == '__main__':
@@ -369,7 +453,9 @@ if __name__ == '__main__':
     parser.add_argument("--dataset", type=str, default='mvtec')
     parser.add_argument("--features_list", type=int, nargs="+", default=[6, 12, 18, 24], help="features used")
     parser.add_argument("--batch_size", type=int, default=8, help="batch size")
-    parser.add_argument("--image_size", type=int, default=518, help="image size")
+    parser.add_argument("--model_input_size", type=int, default=518, help="model input image size")
+    parser.add_argument("--image_size", type=int, default=None, help="deprecated alias for --model_input_size")
+    parser.add_argument("--metric_resolution", type=int, default=None, help="native Bridge GT metric resolution")
     parser.add_argument("--n_ctx", type=int, default=12, help="zero shot")
     parser.add_argument("--seed", type=int, default=10, help="random seed")
     parser.add_argument("--sigma", type=int, default=4, help="zero shot")
@@ -383,7 +469,15 @@ if __name__ == '__main__':
     parser.add_argument("--pq_mid_dim", type=int, default=128, help="the number of the first hidden layer in pqadapter")
     parser.add_argument("--pq_context", action="store_true", help="Enable context feature")
     parser.add_argument("--class_name", type=str, help="class name for a special dataset, for example, bottle in MVTec")
+    parser.add_argument("--cpu_eval", action="store_true", help="store predictions and compute metrics on CPU")
+    parser.add_argument("--pixel_thresholds", type=int, default=2048, help="threshold bins for pixel AUROC/AP/F1max")
+    parser.add_argument("--pro_thresholds", type=int, default=256, help="threshold bins for pixel AUPRO")
+    parser.add_argument("--bridge_class_metrics", action="store_true", help="report Bridge2893 metrics per defect color")
     args = parser.parse_args()
+    if args.image_size is not None:
+        if args.model_input_size != 518 and args.model_input_size != args.image_size:
+            parser.error('--image_size and --model_input_size disagree')
+        args.model_input_size = args.image_size
     print(args)
     setup_seed(args.seed)
     test(args)

@@ -94,11 +94,19 @@ class Dataset(data.Dataset):
         self.mode = mode
         self.save_dir = save_dir
 
-        meta_info_json = json.load(open(f'{self.root}/meta.json', 'r'))
-        meta_test_info = meta_info_json['test']
-        meta_train_info = meta_info_json['train']
+        with open(f'{self.root}/meta.json', 'r') as meta_file:
+            meta_info_json = json.load(meta_file)
+        meta_test_info = meta_info_json.get('test') or meta_info_json.get('train')
+        meta_train_info = meta_info_json.get('train') or meta_test_info
+        if not meta_test_info:
+            raise ValueError(f'No train/test samples found in {self.root}/meta.json')
 
-        self.prompt_data_all = meta_train_info
+        # Image prompts must be normal samples. The upstream implementation
+        # sampled from the complete split and could silently choose defects.
+        self.prompt_data_all = {
+            cls_name: [item for item in items if item['anomaly'] == 0]
+            for cls_name, items in meta_train_info.items()
+        }
 
         if class_name is not None:
             self.cls_names = [class_name]
@@ -162,6 +170,8 @@ class Dataset(data.Dataset):
         # normal image --> for few shot setting
         prompt_image_list = []
         if self.mode == 'train':
+            if not self.prompt_data_all[cls_name]:
+                raise ValueError(f'No normal prompt samples for class {cls_name}')
             prompt_data = random.choice(self.prompt_data_all[cls_name])
             prompt_data_path = prompt_data['img_path']
             prompt_image = Image.open(os.path.join(self.root, prompt_data_path))
@@ -203,11 +213,15 @@ class PromptDataset(data.Dataset):
 
         self.prompt_data_all = []
 
-        meta_info_json = json.load(open(f'{self.root}/meta.json', 'r'))
-        if meta_info_json['train']:
-            meta_train_info = meta_info_json['train']
-        else:
-            meta_train_info = meta_info_json['test']
+        with open(f'{self.root}/meta.json', 'r') as meta_file:
+            meta_info_json = json.load(meta_file)
+        meta_train_info = meta_info_json.get('train') or meta_info_json.get('test')
+        if not meta_train_info:
+            raise ValueError(f'No train/test samples found in {self.root}/meta.json')
+        meta_train_info = {
+            cls_name: [item for item in items if item['anomaly'] == 0]
+            for cls_name, items in meta_train_info.items()
+        }
 
         if class_name is not None:
             self.cls_names = [class_name]
@@ -238,9 +252,13 @@ class PromptDataset(data.Dataset):
             else:
                 for cls_name in self.cls_names:
                     data_tmp = meta_train_info[cls_name]
-                    #data_tmp = [item for item in data_tmp if item['anomaly'] == 1] # 排除OK
-                    torch.manual_seed(seed)
-                    indices = torch.randint(0, len(data_tmp), (self.k_shots,))
+                    if len(data_tmp) < self.k_shots:
+                        raise ValueError(
+                            f'Class {cls_name} has {len(data_tmp)} normal samples, '
+                            f'but {self.k_shots} shots were requested.'
+                        )
+                    generator = torch.Generator().manual_seed(seed)
+                    indices = torch.randperm(len(data_tmp), generator=generator)[:self.k_shots]
                     self.prompt_data_all.extend([data_tmp[i] for i in indices])
 
                     for i in range(len(indices)):
