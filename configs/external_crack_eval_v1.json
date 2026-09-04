@@ -1,0 +1,19 @@
+{
+  "protocol_id": "external-crack-eval-v1",
+  "datasets": {
+    "CamCrack789": {"split": "test", "images": 157, "mask_rule": "uint8>=128"},
+    "Crack500": {"split": "test", "images": 675, "mask_rule": "binary>0"}
+  },
+  "models": ["Row 0", "v1.3 Fine-only", "v2.0", "v2.1"],
+  "target_domain_training": false,
+  "target_domain_model_selection": false,
+  "model_input_size": 518,
+  "structural_tile_size": 1024,
+  "padding": "right-bottom replicate",
+  "continuous_metrics": ["Pixel AP", "Pixel AUROC", "Pixel F1max"],
+  "binary_threshold": 0.5,
+  "boundary_tolerance_pixels": 3,
+  "skeleton_tolerance_pixels": 3,
+  "minimum_component_pixels": 10,
+  "binary_metrics": ["Boundary F1", "clDice", "Skeleton recall", "Connected-component recall"]
+}
