@@ -1,0 +1,35 @@
+{
+  "protocol_id": "dacl10k-external-eval-v1",
+  "dataset": "DACL10K-v2 official validation",
+  "expected_images": 975,
+  "damage_labels": [
+    "alligator crack", "cavity", "crack", "efflorescence",
+    "exposed rebars", "graffiti", "hollowareas", "restformwork",
+    "rockpocket", "rust", "spalling", "weathering", "wetspot"
+  ],
+  "object_labels": [
+    "bearing", "drainage", "expansion joint", "joint tape",
+    "protective equipment", "washouts/concrete corrosion"
+  ],
+  "bridge4_mapping": {
+    "Crack": ["crack", "alligator crack"],
+    "Spalling": ["spalling"],
+    "Corrosion": ["rust"],
+    "Efflorescence": ["efflorescence"]
+  },
+  "unseen_damage_labels": [
+    "cavity", "exposed rebars", "graffiti", "hollowareas",
+    "restformwork", "rockpocket", "weathering", "wetspot"
+  ],
+  "mask_precedence": "target-positive > other-damage-ignore > background",
+  "object_only_pixels": "background",
+  "tile_size": 1024,
+  "stride": 768,
+  "padding": "right-bottom replicate",
+  "stitching": "non-periodic 2D Hann weighted continuous probability average",
+  "histogram_bins": 65536,
+  "ap_integration": "Average Precision step integral",
+  "image_level_metrics": false,
+  "target_domain_training": false,
+  "target_domain_model_selection": false
+}
