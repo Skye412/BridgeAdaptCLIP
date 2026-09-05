@@ -31,7 +31,10 @@ run_crack_model() {
 run_crack() {
   local dataset protocol
   for dataset in CamCrack789 Crack500; do
-    for protocol in symmetric_pad_native_scale fit_long_side_1024; do
+    for protocol in \
+      current_top_left_pad \
+      symmetric_pad_native_scale \
+      fit_long_side_1024; do
       run_crack_model "${dataset}" "${protocol}" row0
       run_crack_model "${dataset}" "${protocol}" fine13 \
         --fine_checkpoint "${v13_fine}"

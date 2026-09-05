@@ -8,7 +8,7 @@
   "crack_datasets": ["CamCrack789", "Crack500"],
   "crack_models": ["row0", "fine13", "v20", "v21"],
   "crack_protocols": {
-    "current_top_left_pad": "Existing External Protocol v1 result; do not rerun",
+    "current_top_left_pad": "Reproduced as the internal control without overwriting External Protocol v1",
     "symmetric_pad_native_scale": "Native content centered with symmetric replicate padding",
     "fit_long_side_1024": "Bicubic fit long side to 1024, symmetric replicate padding, inverse-map prediction"
   },
