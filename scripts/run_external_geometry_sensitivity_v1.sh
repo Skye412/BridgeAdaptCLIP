@@ -51,7 +51,7 @@ run_valid_core_model() {
     --model "${model}" --dataset_root "${database_root}/dacl10k-DatasetNinja" \
     --output_dir "${output_dir}" --row0_checkpoint "${row0}" \
     --tile_size 1024 --halo 128 --tile_batch_size 1 \
-    --histogram_bins 65536 --save_every 5 --seed 10 --amp \
+    --histogram_bins 65536 --save_every 5 --seed 10 --amp --resume \
     "${max_images_args[@]}" "$@"
 }
 
@@ -76,4 +76,3 @@ case "${scope}" in
   all) run_crack; run_dacl ;;
   *) echo "Usage: $0 {crack|dacl|all}" >&2; exit 2 ;;
 esac
-

@@ -134,7 +134,10 @@ def evaluate(args):
             "checkpoint_selection": "frozen Bridge2893 checkpoint",
             "binary_threshold": args.binary_threshold,
             "tile_size": args.tile_size,
-            "inverse_mapping": "crop valid content then bilinear resize to original H/W",
+            "inverse_mapping": (
+                "crop valid content; bilinear resize to original H/W only for "
+                "fit_long_side_1024"
+            ),
             "ground_truth": "original resolution; never resized",
         },
         "images_evaluated": len(manifest),

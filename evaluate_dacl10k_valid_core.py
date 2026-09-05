@@ -17,6 +17,7 @@ from tools.dacl10k_external import (
     build_protocol_masks,
     build_validation_manifest,
     rasterize_damage_labels,
+    tile_starts,
     valid_core_window_outputs,
 )
 
@@ -48,12 +49,28 @@ def evaluate(args):
     if args.max_images is not None:
         manifest = manifest[:args.max_images]
 
-    predictor = FrozenTilePredictor(args)
+    state_path = output_dir / "streaming_state.npz"
     accumulator = ProtocolAccumulator(args.histogram_bins)
-    total_tiles = 0
-    tile_counts = []
+    completed = 0
+    if args.resume and state_path.is_file():
+        completed = accumulator.load(state_path)
+        if completed > len(manifest):
+            raise ValueError("Resume state exceeds current manifest length")
+        logger.info("Resuming after %d images", completed)
+
+    predictor = FrozenTilePredictor(args)
+    core_size = args.tile_size - 2 * args.halo
+
+    def record_tile_count(record):
+        return len(tile_starts(record["height"], core_size, core_size)) * len(
+            tile_starts(record["width"], core_size, core_size)
+        )
+
+    tile_counts = [record_tile_count(record) for record in manifest]
+    total_tiles = sum(tile_counts[:completed])
     start = time.time()
-    for index, record in enumerate(tqdm(manifest), start=1):
+    progress = tqdm(manifest[completed:], initial=completed, total=len(manifest))
+    for index, record in enumerate(progress, start=completed):
         with Image.open(record["image_path"]) as source:
             image = ImageOps.exif_transpose(source)
 
@@ -71,12 +88,13 @@ def evaluate(args):
         protocol = build_protocol_masks(damage)
         accumulator.update(outputs["probability"], protocol)
         total_tiles += geometry["tile_count"]
-        tile_counts.append(geometry["tile_count"])
-        if index % args.save_every == 0 or index == len(manifest):
+        completed_now = index + 1
+        if completed_now % args.save_every == 0 or completed_now == len(manifest):
+            accumulator.save(state_path, completed_now)
             write_json(output_dir / "progress.json", {
                 "model": args.model,
                 "geometry_protocol": "valid_core_128_halo",
-                "completed_images": index,
+                "completed_images": completed_now,
                 "total_images": len(manifest),
                 "processed_tiles": total_tiles,
                 "elapsed_seconds": time.time() - start,
@@ -90,7 +108,6 @@ def evaluate(args):
         }
         for task, values in raw_metrics.items()
     }
-    core_size = args.tile_size - 2 * args.halo
     report = {
         "protocol": {
             "protocol_id": "external-geometry-sensitivity-v1",
@@ -104,7 +121,9 @@ def evaluate(args):
             "halo": args.halo,
             "valid_core_size": core_size,
             "output_stride": core_size,
-            "padding": "symmetric replicate context halo",
+            "padding": (
+                "symmetric replicate context halo plus right/bottom core completion"
+            ),
             "stitching": "non-periodic 2-D Hann weighted valid-core average",
             "ground_truth": "original annotation resolution; never resized",
         },
@@ -140,6 +159,7 @@ def build_parser():
     parser.add_argument("--tile_batch_size", type=int, default=1)
     parser.add_argument("--histogram_bins", type=int, default=65536)
     parser.add_argument("--save_every", type=int, default=5)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max_images", type=int)
     parser.add_argument("--seed", type=int, default=10)
     parser.add_argument("--sigma", type=float, default=4.0)
