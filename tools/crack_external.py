@@ -10,6 +10,85 @@ from PIL import Image, ImageOps
 from skimage.morphology import skeletonize
 
 
+GEOMETRY_PROTOCOLS = (
+    "current_top_left_pad",
+    "symmetric_pad_native_scale",
+    "fit_long_side_1024",
+)
+
+
+def prepare_geometry_canvas(image, protocol, canvas_size=1024):
+    """Map one sub-canvas image to a frozen square sensitivity canvas."""
+    if protocol not in GEOMETRY_PROTOCOLS:
+        raise ValueError(f"Unknown geometry protocol: {protocol}")
+    source = ImageOps.exif_transpose(image).convert("RGB")
+    source_width, source_height = source.size
+    if protocol == "fit_long_side_1024":
+        scale = canvas_size / max(source_width, source_height)
+        content_width = min(canvas_size, int(round(source_width * scale)))
+        content_height = min(canvas_size, int(round(source_height * scale)))
+        content = source.resize(
+            (content_width, content_height), resample=Image.Resampling.BICUBIC
+        )
+    else:
+        if source_width > canvas_size or source_height > canvas_size:
+            raise ValueError(
+                f"{protocol} requires source dimensions <= {canvas_size}, "
+                f"got {(source_width, source_height)}"
+            )
+        content_width, content_height = source_width, source_height
+        content = source
+
+    pad_width, pad_height = canvas_size - content_width, canvas_size - content_height
+    if protocol == "current_top_left_pad":
+        left = top = 0
+    else:
+        left, top = pad_width // 2, pad_height // 2
+    right, bottom = pad_width - left, pad_height - top
+    array = np.asarray(content, dtype=np.uint8)
+    canvas = np.pad(
+        array, ((top, bottom), (left, right), (0, 0)), mode="edge"
+    )
+    metadata = {
+        "protocol": protocol,
+        "source_width": source_width,
+        "source_height": source_height,
+        "content_width": content_width,
+        "content_height": content_height,
+        "canvas_size": canvas_size,
+        "content_left": left,
+        "content_top": top,
+        "content_right": left + content_width,
+        "content_bottom": top + content_height,
+        "valid_content_fraction": (
+            content_width * content_height / float(canvas_size * canvas_size)
+        ),
+    }
+    return Image.fromarray(canvas), metadata
+
+
+def restore_geometry_map(canvas_map, metadata):
+    """Crop a canvas output to valid content and map it to source H/W."""
+    values = np.asarray(canvas_map, dtype=np.float32)
+    canvas_size = metadata["canvas_size"]
+    if values.shape != (canvas_size, canvas_size):
+        raise ValueError(
+            f"Expected {(canvas_size, canvas_size)} canvas output, got {values.shape}"
+        )
+    content = values[
+        metadata["content_top"]:metadata["content_bottom"],
+        metadata["content_left"]:metadata["content_right"],
+    ]
+    source_shape = (metadata["source_height"], metadata["source_width"])
+    if content.shape != source_shape:
+        content = cv2.resize(
+            content,
+            (metadata["source_width"], metadata["source_height"]),
+            interpolation=cv2.INTER_LINEAR,
+        )
+    return np.asarray(content, dtype=np.float32)
+
+
 def build_crack_test_manifest(dataset_root, dataset_name):
     root = Path(dataset_root)
     image_dir, mask_dir = root / "test_img", root / "test_lab"

@@ -25,11 +25,12 @@ run_model() {
 }
 
 case "${model}" in
+  row0) run_model row0 ;;
   v20) run_model v20 --fine_checkpoint "${v13_fine}" --broad_checkpoint "${v20_broad}" ;;
   v21) run_model v21 --fine_checkpoint "${v21_fine}" --broad_checkpoint "${v21_broad}" ;;
   all)
     run_model v20 --fine_checkpoint "${v13_fine}" --broad_checkpoint "${v20_broad}"
     run_model v21 --fine_checkpoint "${v21_fine}" --broad_checkpoint "${v21_broad}"
     ;;
-  *) echo "Usage: $0 {v20|v21|all}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {row0|v20|v21|all}" >&2; exit 2 ;;
 esac

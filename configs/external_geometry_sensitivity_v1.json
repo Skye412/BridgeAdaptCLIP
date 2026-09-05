@@ -1,0 +1,27 @@
+{
+  "protocol_id": "external-geometry-sensitivity-v1",
+  "purpose": "Frozen-model analysis of content under-fill, pad placement, and DACL tile context",
+  "training": false,
+  "checkpoint_reselection": false,
+  "external_threshold_tuning": false,
+  "ground_truth_resize": false,
+  "crack_datasets": ["CamCrack789", "Crack500"],
+  "crack_models": ["row0", "fine13", "v20", "v21"],
+  "crack_protocols": {
+    "current_top_left_pad": "Existing External Protocol v1 result; do not rerun",
+    "symmetric_pad_native_scale": "Native content centered with symmetric replicate padding",
+    "fit_long_side_1024": "Bicubic fit long side to 1024, symmetric replicate padding, inverse-map prediction"
+  },
+  "dacl10k_models": ["row0", "v20", "v21"],
+  "dacl10k_valid_core": {
+    "input_tile_size": 1024,
+    "halo": 128,
+    "valid_core_size": 768,
+    "output_stride": 768,
+    "padding": "symmetric replicate context halo",
+    "stitching": "non-periodic 2-D Hann weighted valid-core average"
+  },
+  "fixed_binary_threshold": 0.5,
+  "morphology_tolerance_pixels": 3,
+  "minimum_component_pixels": 10
+}

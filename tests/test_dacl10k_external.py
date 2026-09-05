@@ -16,6 +16,7 @@ from tools.dacl10k_external import (
     sliding_window_probability,
     sliding_window_outputs,
     tile_starts,
+    valid_core_window_outputs,
 )
 
 
@@ -103,6 +104,31 @@ class DACL10KExternalTests(unittest.TestCase):
         self.assertTrue(np.allclose(outputs["fine_correction"], -1.5, atol=1e-5))
         self.assertTrue(np.all(geometry["overlap"] ^ geometry["non_overlap"]))
         self.assertTrue(np.all(geometry["edge_dominated"] ^ geometry["center_dominated"]))
+
+    def test_valid_core_constant_prediction_covers_original_shape(self):
+        image = Image.fromarray(np.zeros((900, 1600, 3), dtype=np.uint8))
+
+        def predict(tiles):
+            shape = (len(tiles), 1024, 1024)
+            return {"probability": np.full(shape, 0.42, dtype=np.float32)}
+
+        outputs, metadata = valid_core_window_outputs(image, predict)
+        self.assertEqual(outputs["probability"].shape, (900, 1600))
+        self.assertTrue(np.allclose(outputs["probability"], 0.42, atol=1e-6))
+        self.assertEqual(metadata["tile_count"], 6)
+        self.assertEqual(metadata["core_size"], 768)
+
+    def test_valid_core_discards_tile_edge_artifact(self):
+        image = Image.fromarray(np.zeros((500, 700, 3), dtype=np.uint8))
+
+        def predict(tiles):
+            values = np.ones((len(tiles), 1024, 1024), dtype=np.float32)
+            values[:, 128:896, 128:896] = 0.0
+            return {"probability": values}
+
+        outputs, metadata = valid_core_window_outputs(image, predict)
+        self.assertEqual(metadata["tile_count"], 1)
+        self.assertTrue(np.allclose(outputs["probability"], 0.0))
 
 
 if __name__ == "__main__":

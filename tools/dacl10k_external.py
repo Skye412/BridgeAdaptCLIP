@@ -407,3 +407,82 @@ def sliding_window_outputs(
         "padded_image": np.asarray(bool(pad_bottom or pad_right)),
     }
     return outputs, geometry
+
+
+def valid_core_window_outputs(
+    image: Image.Image,
+    predict_tiles,
+    tile_size: int = 1024,
+    halo: int = 128,
+    tile_batch_size: int = 1,
+) -> tuple[dict[str, np.ndarray], dict[str, object]]:
+    """Stitch only the central valid core of halo-padded input tiles."""
+    core_size = tile_size - 2 * halo
+    if halo <= 0 or core_size <= 0:
+        raise ValueError("halo must be positive and smaller than half the tile size")
+    rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    height, width = rgb.shape[:2]
+    extra_bottom = max(0, core_size - height)
+    extra_right = max(0, core_size - width)
+    padded = np.pad(
+        rgb,
+        (
+            (halo, halo + extra_bottom),
+            (halo, halo + extra_right),
+            (0, 0),
+        ),
+        mode="edge",
+    )
+    y_starts = tile_starts(height, core_size, core_size)
+    x_starts = tile_starts(width, core_size, core_size)
+    starts = [(top, left) for top in y_starts for left in x_starts]
+    core_weight = hann_weight(core_size)
+    weighted_sums = {}
+    weight_sum = np.zeros((height, width), dtype=np.float32)
+    coverage = np.zeros((height, width), dtype=np.uint16)
+
+    for offset in range(0, len(starts), tile_batch_size):
+        batch_starts = starts[offset:offset + tile_batch_size]
+        tiles = [
+            Image.fromarray(padded[top:top + tile_size, left:left + tile_size])
+            for top, left in batch_starts
+        ]
+        batch_outputs = predict_tiles(tiles)
+        for name, values in batch_outputs.items():
+            values = np.asarray(values, dtype=np.float32)
+            if values.shape != (len(tiles), tile_size, tile_size):
+                raise ValueError(f"Unexpected {name} tile shape {values.shape}")
+            if name not in weighted_sums:
+                weighted_sums[name] = np.zeros((height, width), dtype=np.float32)
+            for value, (top, left) in zip(values, batch_starts):
+                valid_height = min(core_size, height - top)
+                valid_width = min(core_size, width - left)
+                core = value[halo:halo + valid_height, halo:halo + valid_width]
+                weight = core_weight[:valid_height, :valid_width]
+                region = np.s_[top:top + valid_height, left:left + valid_width]
+                weighted_sums[name][region] += core * weight
+        for top, left in batch_starts:
+            valid_height = min(core_size, height - top)
+            valid_width = min(core_size, width - left)
+            weight = core_weight[:valid_height, :valid_width]
+            region = np.s_[top:top + valid_height, left:left + valid_width]
+            weight_sum[region] += weight
+            coverage[region] += 1
+
+    if np.any(weight_sum <= 0):
+        raise RuntimeError("Valid-core stitching left uncovered pixels")
+    outputs = {name: values / weight_sum for name, values in weighted_sums.items()}
+    metadata = {
+        "tile_size": tile_size,
+        "halo": halo,
+        "core_size": core_size,
+        "stride": core_size,
+        "tile_count": len(starts),
+        "tile_starts_y": y_starts,
+        "tile_starts_x": x_starts,
+        "overlap_pixel_count": int((coverage > 1).sum(dtype=np.int64)),
+        "max_coverage": int(coverage.max()),
+        "padding": "symmetric halo replicate plus right/bottom core completion",
+        "stitching": "non-periodic 2-D Hann weighted valid-core average",
+    }
+    return outputs, metadata

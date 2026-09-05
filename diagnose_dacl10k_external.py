@@ -70,6 +70,11 @@ def diagnose(args):
     if args.max_images is not None:
         manifest = manifest[:args.max_images]
     predictor = FrozenTilePredictor(args)
+    correction_names = []
+    if predictor.fine is not None:
+        correction_names.append("fine_correction")
+    if predictor.broad is not None:
+        correction_names.append("broad_correction")
     geometry_histograms = {
         name: StreamingBinaryHistogram(args.histogram_bins)
         for name in ("edge_dominated", "center_dominated", "overlap", "non_overlap")
@@ -79,7 +84,7 @@ def diagnose(args):
         "non_padded_images": ProtocolAccumulator(args.histogram_bins),
     }
     pad_image_counts = {name: 0 for name in pad_groups}
-    correction_moments = {"fine_correction": {}, "broad_correction": {}}
+    correction_moments = {name: {} for name in correction_names}
     start = time.time()
 
     for index, record in enumerate(tqdm(manifest), start=1):
@@ -90,7 +95,7 @@ def diagnose(args):
                 outputs = predictor.predict_outputs(tiles)
                 return {
                     key: outputs[key]
-                    for key in ("probability", "fine_correction", "broad_correction")
+                    for key in ("probability", *correction_names)
                 }
 
             outputs, geometry = sliding_window_outputs(
@@ -168,12 +173,12 @@ def diagnose(args):
 
 def build_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=("v20", "v21"), required=True)
+    parser.add_argument("--model", choices=("row0", "v20", "v21"), required=True)
     parser.add_argument("--dataset_root", required=True)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--row0_checkpoint", required=True)
-    parser.add_argument("--fine_checkpoint", required=True)
-    parser.add_argument("--broad_checkpoint", required=True)
+    parser.add_argument("--fine_checkpoint")
+    parser.add_argument("--broad_checkpoint")
     parser.add_argument("--fine_state_key", default="bridgeadaptclip_v13")
     parser.add_argument("--broad_state_key", default="bridgeadaptclip_v20")
     parser.add_argument("--pretrained_model", default="ViT-L/14@336px")
@@ -196,6 +201,8 @@ def build_parser():
     parser.add_argument("--probability_epsilon", type=float, default=1e-6)
     parser.add_argument("--amp", action="store_true")
     args = parser.parse_args()
+    if args.model != "row0" and (not args.fine_checkpoint or not args.broad_checkpoint):
+        parser.error("v20/v21 require --fine_checkpoint and --broad_checkpoint")
     if args.model == "v21":
         args.fine_state_key = "bridgeadaptclip_v21_fine"
         args.broad_state_key = "bridgeadaptclip_v21"
