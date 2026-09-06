@@ -6,6 +6,7 @@ import os
 
 import numpy as np
 import torch
+from scipy.ndimage import gaussian_filter
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -53,12 +54,20 @@ def evaluate(args):
         )
         probability = torch.stack([
             (item[:, 1] + 1.0 - item[:, 0]) / 2.0 for item in maps
-        ]).mean(0).unsqueeze(1)
+        ]).mean(0)
+        probability = torch.stack([
+            torch.from_numpy(gaussian_filter(
+                score.detach().float().cpu().numpy(), sigma=4
+            )) for score in probability
+        ]).to(device).unsqueeze(1)
         probability = torch.nn.functional.interpolate(
             probability, size=(1024,1024), mode='bilinear', align_corners=False
         ).clamp(0,1)
         target = batch['native_mask'].to(device).unsqueeze(1)
-        metrics.update(probability, target, batch['anomaly'])
+        metrics.update(
+            probability, target, batch['anomaly'],
+            image_scores=image_logits.softmax(-1)[:, 1],
+        )
         current = fixed_threshold_counts(probability, target, args.val_threshold)
         for key in counts:
             counts[key] += current[key]
@@ -68,7 +77,8 @@ def evaluate(args):
     result['P-F1@val-threshold'] = f1_from_counts(counts)
     result['val_threshold'] = args.val_threshold
     pixel_scores = torch.cat(predictions)
-    image_scores = pixel_scores.flatten(1).max(1).values
+    # Per-defect image metrics are diagnostic; use the official global score.
+    image_scores = torch.as_tensor(metrics.image_scores)
     per_defect = evaluate_bridge_classes(
         np.asarray(paths), image_scores, pixel_scores, args.pixel_thresholds,
         os.path.join(args.output_dir, 'bridge_defect_metrics.json'),

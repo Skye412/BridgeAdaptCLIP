@@ -12,7 +12,7 @@ class BinaryProtocolMetrics:
         self.image_targets = []
         self.image_scores = []
 
-    def update(self, probabilities, targets, image_targets):
+    def update(self, probabilities, targets, image_targets, image_scores=None):
         probabilities = probabilities.detach().cpu().float().clamp(0, 1)
         targets = targets.detach().cpu().bool()
         indices = (probabilities * (self.bins - 1)).floor().long()
@@ -25,9 +25,9 @@ class BinaryProtocolMetrics:
         self.image_targets.extend(
             torch.as_tensor(image_targets).detach().cpu().int().tolist()
         )
-        self.image_scores.extend(
-            probabilities.flatten(1).max(dim=1).values.tolist()
-        )
+        if image_scores is None:
+            image_scores = probabilities.flatten(1).max(dim=1).values
+        self.image_scores.extend(torch.as_tensor(image_scores).detach().cpu().tolist())
 
     def compute(self):
         from sklearn.metrics import average_precision_score, roc_auc_score

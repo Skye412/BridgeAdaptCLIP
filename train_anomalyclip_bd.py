@@ -62,7 +62,7 @@ def validate(library, model, prompt_learner, loader, args, device):
     metrics = BinaryProtocolMetrics(args.pixel_thresholds)
     for batch in tqdm(loader, desc='validation', leave=False):
         images = batch['img'].to(device, non_blocking=True)
-        _, maps = features_and_maps(
+        image_logits, maps = features_and_maps(
             library, model, prompt_learner, images,
             args.features_list, args.image_size,
         )
@@ -77,7 +77,10 @@ def validate(library, model, prompt_learner, loader, args, device):
             probability, size=(1024, 1024), mode='bilinear', align_corners=False
         ).clamp(0, 1)
         target = batch['native_mask'].to(device).unsqueeze(1)
-        metrics.update(probability, target, batch['anomaly'])
+        metrics.update(
+            probability, target, batch['anomaly'],
+            image_scores=image_logits.softmax(-1)[:, 1],
+        )
     return metrics.compute()
 
 
