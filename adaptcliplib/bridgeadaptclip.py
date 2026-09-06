@@ -62,6 +62,41 @@ class DEGConvLite(nn.Module):
         return feature + directional * gate
 
 
+class SquareConvReplacement(nn.Module):
+    """Controlled SGE ablation using two independent 3x3 depthwise paths.
+
+    Projection, concatenation, output projection, gating, channels, and the
+    residual connection match :class:`DEGConvLite`; only strip geometry is
+    replaced by square kernels.
+    """
+
+    def __init__(self, channels=128):
+        super().__init__()
+        self.input_projection = ConvNormAct(channels, channels, kernel_size=1)
+        self.horizontal = nn.Conv2d(
+            channels, channels, kernel_size=3, padding=1,
+            groups=channels, bias=False,
+        )
+        self.vertical = nn.Conv2d(
+            channels, channels, kernel_size=3, padding=1,
+            groups=channels, bias=False,
+        )
+        self.direction_projection = nn.Sequential(
+            nn.Conv2d(2 * channels, channels, kernel_size=1, bias=False),
+            _group_norm(channels),
+            nn.GELU(),
+        )
+        self.edge_gate = nn.Conv2d(channels, channels, kernel_size=1)
+
+    def forward(self, feature):
+        projected = self.input_projection(feature)
+        enhanced = self.direction_projection(torch.cat([
+            self.horizontal(projected), self.vertical(projected)
+        ], dim=1))
+        gate = torch.sigmoid(self.edge_gate(enhanced))
+        return feature + enhanced * gate
+
+
 class BridgeAdaptCLIPV1(nn.Module):
     """Native-1024 structural branch with residual spatial refinement."""
 
@@ -197,6 +232,7 @@ class BridgeAdaptCLIPV11(nn.Module):
         strip_kernel=5,
         structural_input_size=1024,
         probability_epsilon=1e-6,
+        structural_variant='strip',
     ):
         super().__init__()
         if structural_input_size % 4:
@@ -210,6 +246,11 @@ class BridgeAdaptCLIPV11(nn.Module):
         self.structural_input_size = structural_input_size
         self.fusion_size = structural_input_size // 4
         self.probability_epsilon = probability_epsilon
+        if structural_variant not in ('strip', 'square', 'semantic_only'):
+            raise ValueError(
+                'structural_variant must be strip, square, or semantic_only'
+            )
+        self.structural_variant = structural_variant
 
         self.semantic_projection = nn.Sequential(
             nn.Conv2d(semantic_channels, fusion_channels, kernel_size=1, bias=False),
@@ -222,7 +263,11 @@ class BridgeAdaptCLIPV11(nn.Module):
             ConvNormAct(64, 64, kernel_size=3, stride=1),
             ConvNormAct(64, structural_channels, kernel_size=3, stride=1),
         )
-        self.degconv_lite = DEGConvLite(structural_channels, strip_kernel)
+        self.degconv_lite = (
+            SquareConvReplacement(structural_channels)
+            if structural_variant == 'square'
+            else DEGConvLite(structural_channels, strip_kernel)
+        )
 
         joint_channels = structural_channels + fusion_channels + 1
         self.joint_projection = ConvNormAct(
@@ -265,9 +310,16 @@ class BridgeAdaptCLIPV11(nn.Module):
             raise ValueError('row0_probability must have one channel')
 
         semantic_feature = self.semantic_projection(visual_patch_feature)
-        structural_feature = self.degconv_lite(
-            self.structural_stem(structural_image)
-        )
+        if self.structural_variant == 'semantic_only':
+            structural_feature = torch.zeros(
+                structural_image.shape[0], self.structural_channels,
+                self.fusion_size, self.fusion_size,
+                device=structural_image.device, dtype=structural_image.dtype,
+            )
+        else:
+            structural_feature = self.degconv_lite(
+                self.structural_stem(structural_image)
+            )
         if structural_feature.shape[-2:] != (self.fusion_size, self.fusion_size):
             raise RuntimeError('Structural stem produced an unexpected spatial size.')
 

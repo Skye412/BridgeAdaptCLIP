@@ -1,0 +1,2 @@
+# Additional dependency for the SegFormer-B1 paper comparison.
+transformers==4.56.2

@@ -81,7 +81,22 @@ def train(args):
         strip_kernel=args.strip_kernel,
         structural_input_size=args.structural_input_size,
         probability_epsilon=args.probability_epsilon,
+        structural_variant=args.structural_variant,
     ).to(device).train()
+    if args.initial_state_path:
+        initial_state = torch.load(args.initial_state_path, map_location='cpu')
+        source_state = initial_state['bridgeadaptclip_initial_state']
+        target_state = bridge_model.state_dict()
+        compatible_state = {
+            name: value for name, value in source_state.items()
+            if name in target_state and target_state[name].shape == value.shape
+        }
+        bridge_model.load_state_dict(compatible_state, strict=False)
+    if args.structural_variant == 'semantic_only':
+        for parameter in bridge_model.structural_stem.parameters():
+            parameter.requires_grad_(False)
+        for parameter in bridge_model.degconv_lite.parameters():
+            parameter.requires_grad_(False)
     model.to(device)
     textual_learner.to(device)
     visual_learner.to(device)
@@ -93,7 +108,10 @@ def train(args):
             learned_prompts, tokenized_prompts
         ).float()
 
-    trainable_parameters = list(bridge_model.parameters())
+    trainable_parameters = [
+        parameter for parameter in bridge_model.parameters()
+        if parameter.requires_grad
+    ]
     optimizer = torch.optim.Adam(
         [{'params': trainable_parameters, 'lr': args.new_module_learning_rate}],
         betas=(0.5, 0.999),
@@ -410,6 +428,11 @@ def train(args):
             'epoch': epoch,
             'row0_checkpoint_path': os.path.abspath(args.row0_checkpoint_path),
             'row0_checkpoint_sha256': row0_sha256,
+            'structural_variant': args.structural_variant,
+            'initial_state_path': (
+                os.path.abspath(args.initial_state_path)
+                if args.initial_state_path else None
+            ),
             'config': vars(args),
             'architecture': {
                 'model_name': args.model_name,
@@ -535,6 +558,12 @@ def build_parser():
     parser.add_argument('--vl_reduction', type=int, default=4)
     parser.add_argument('--fusion_channels', type=int, default=128)
     parser.add_argument('--structural_channels', type=int, default=128)
+    parser.add_argument(
+        '--structural_variant',
+        choices=('strip', 'square', 'semantic_only'),
+        default='strip',
+    )
+    parser.add_argument('--initial_state_path')
     parser.add_argument('--strip_kernel', type=int, default=5)
     parser.add_argument('--epochs', type=int, default=15)
     parser.add_argument('--physical_batch_size', type=int, default=4)

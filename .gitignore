@@ -1,4 +1,5 @@
 __pycache__/
+_upstream_*/
 .ipynb_checkpoints/
 *.py[cod]
 *$py.class

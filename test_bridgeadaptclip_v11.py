@@ -77,8 +77,15 @@ def evaluate(args):
         strip_kernel=args.strip_kernel,
         structural_input_size=args.structural_input_size,
         probability_epsilon=args.probability_epsilon,
+        structural_variant=args.structural_variant,
     )
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
+    checkpoint_variant = checkpoint.get('structural_variant', 'strip')
+    if checkpoint_variant != args.structural_variant:
+        raise ValueError(
+            f'Checkpoint structural_variant={checkpoint_variant}, '
+            f'evaluator requested {args.structural_variant}'
+        )
     bridge_model.load_state_dict(checkpoint[args.checkpoint_state_key])
     expected_sha = checkpoint.get('row0_checkpoint_sha256')
     actual_sha = file_sha256(args.row0_checkpoint_path)
@@ -296,6 +303,7 @@ def evaluate(args):
             'checkpoint_path': args.checkpoint_path,
             'image_score_policy': 'exact_frozen_row0',
             'prediction_type': 'continuous_sigmoid_gated_logit_residual',
+            'structural_variant': args.structural_variant,
             'gt_source': 'original_frozen_1024_png_raster',
         },
         'results_percent': full_precision_results,
@@ -328,6 +336,11 @@ def build_parser():
     parser.add_argument('--vl_reduction', type=int, default=4)
     parser.add_argument('--fusion_channels', type=int, default=128)
     parser.add_argument('--structural_channels', type=int, default=128)
+    parser.add_argument(
+        '--structural_variant',
+        choices=('strip', 'square', 'semantic_only'),
+        default='strip',
+    )
     parser.add_argument('--strip_kernel', type=int, default=5)
     parser.add_argument('--probability_epsilon', type=float, default=1e-6)
     parser.add_argument('--batch_size', type=int, default=2)
