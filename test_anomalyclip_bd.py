@@ -30,7 +30,8 @@ def evaluate(args):
         'learnabel_text_embedding_length': 4,
     }
     model, _ = library.load(
-        'ViT-L/14@336px', device=device, design_details=details
+        'ViT-L/14@336px', device=device, design_details=details,
+        download_root=args.clip_cache,
     )
     model.visual.DAPM_replace(DPAM_layer=20)
     model.eval()
@@ -91,6 +92,7 @@ def evaluate(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--upstream_root', required=True)
+    parser.add_argument('--clip_cache', default='/home/skye/.cache/clip')
     parser.add_argument('--test_data_path', required=True)
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--output_dir', required=True)

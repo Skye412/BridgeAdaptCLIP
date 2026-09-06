@@ -94,7 +94,8 @@ def train(args):
         'learnabel_text_embedding_length': args.t_n_ctx,
     }
     model, _ = library.load(
-        'ViT-L/14@336px', device=device, design_details=details
+        'ViT-L/14@336px', device=device, design_details=details,
+        download_root=args.clip_cache,
     )
     model.visual.DAPM_replace(DPAM_layer=20)
     model.eval()
@@ -216,6 +217,7 @@ def train(args):
 def parser():
     p = argparse.ArgumentParser()
     p.add_argument('--upstream_root', required=True)
+    p.add_argument('--clip_cache', default='/home/skye/.cache/clip')
     p.add_argument('--upstream_commit', default='3911738c0867544f545a076ad78f3f11d9ecbfdf')
     p.add_argument('--train_data_path', required=True)
     p.add_argument('--val_data_path', required=True)
