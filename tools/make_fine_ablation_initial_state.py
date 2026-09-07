@@ -1,8 +1,12 @@
 """Create the shared seed-10 Fine initialization for controlled ablations."""
 
 import argparse
+import os
+import sys
 
 import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from adaptcliplib import BridgeAdaptCLIPV12
 from tools import setup_seed
