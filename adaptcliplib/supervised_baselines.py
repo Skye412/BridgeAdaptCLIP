@@ -126,9 +126,86 @@ class SegFormerB1(nn.Module):
         )
 
 
+class UNetPlusPlusResNet34(nn.Module):
+    """SMP U-Net++ with an ImageNet-pretrained ResNet-34 encoder."""
+
+    def __init__(self, pretrained=True):
+        super().__init__()
+        try:
+            import segmentation_models_pytorch as smp
+        except ImportError as error:
+            raise ImportError(
+                'U-Net++ requires segmentation-models-pytorch; '
+                'install requirements-comparisons.txt'
+            ) from error
+        self.model = smp.UnetPlusPlus(
+            encoder_name='resnet34',
+            encoder_weights='imagenet' if pretrained else None,
+            in_channels=3,
+            classes=1,
+            activation=None,
+            decoder_use_batchnorm=True,
+        )
+
+    def forward(self, image):
+        return self.model(image)
+
+
+class HRNetV2W18(nn.Module):
+    """timm HRNetV2-W18 plus the standard resize-concat segmentation head.
+
+    The ImageNet backbone maintains four parallel stage-4 resolutions. Their
+    native outputs are resized to the highest-resolution branch and concatenated,
+    matching the standard HRNet semantic-segmentation aggregation pattern. OCR
+    is intentionally not used.
+    """
+
+    def __init__(self, pretrained=True):
+        super().__init__()
+        try:
+            import timm
+        except ImportError as error:
+            raise ImportError('HRNetV2-W18 requires timm') from error
+        self.backbone = timm.create_model('hrnet_w18', pretrained=pretrained)
+        stage_channels = (18, 36, 72, 144)
+        concat_channels = sum(stage_channels)
+        self.segmentation_head = nn.Sequential(
+            nn.Conv2d(concat_channels, 270, 3, padding=1, bias=False),
+            _group_norm(270),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(270, 1, 1),
+        )
+
+    def forward(self, image):
+        output_size = image.shape[-2:]
+        x = self.backbone.conv1(image)
+        x = self.backbone.bn1(x)
+        x = self.backbone.act1(x)
+        x = self.backbone.conv2(x)
+        x = self.backbone.bn2(x)
+        x = self.backbone.act2(x)
+        branches = self.backbone.stages(x)
+        highest_resolution = branches[0].shape[-2:]
+        resized = [branches[0]] + [
+            F.interpolate(
+                branch, size=highest_resolution,
+                mode='bilinear', align_corners=False,
+            )
+            for branch in branches[1:]
+        ]
+        logits = self.segmentation_head(torch.cat(resized, dim=1))
+        return F.interpolate(
+            logits, size=output_size, mode='bilinear', align_corners=False
+        )
+
+
 def build_supervised_baseline(name, pretrained=True):
     if name == 'deeplabv3plus_r50':
         return DeepLabV3PlusResNet50(pretrained=pretrained)
     if name == 'segformer_b1':
         return SegFormerB1(pretrained=pretrained)
+    if name == 'unetplusplus_r34':
+        return UNetPlusPlusResNet34(pretrained=pretrained)
+    if name == 'hrnetv2_w18':
+        return HRNetV2W18(pretrained=pretrained)
     raise ValueError(f'Unknown supervised baseline: {name}')

@@ -29,6 +29,17 @@ def test_deeplabv3plus_is_native_resolution_and_has_low_level_decoder():
     assert model.decoder[0].in_channels == 304
 
 
+def test_hrnet_uses_resize_concat_head_when_timm_is_available():
+    import pytest
+    pytest.importorskip('timm')
+    from adaptcliplib.supervised_baselines import HRNetV2W18
+    model = HRNetV2W18(pretrained=False).eval()
+    with torch.no_grad():
+        output = model(torch.randn(1, 3, 128, 128))
+    assert output.shape == (1, 1, 128, 128)
+    assert model.segmentation_head[0].in_channels == 270
+
+
 def test_streaming_protocol_metrics_are_finite():
     metric = BinaryProtocolMetrics(bins=64)
     prediction = torch.tensor([[[[0.1, 0.9], [0.2, 0.8]]]])

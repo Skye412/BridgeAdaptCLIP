@@ -12,6 +12,8 @@ from tqdm import tqdm
 from adaptcliplib.supervised_baselines import build_supervised_baseline
 from dataset import BridgeSupervisedDataset
 from tools.bridge_class_metrics import evaluate_bridge_classes
+from tools.bridge_masks import decode_bridge_class_masks
+from tools.crack_external import CrackMorphologyMetrics
 from tools.supervised_protocol import (
     BinaryProtocolMetrics, f1_from_counts, fixed_threshold_counts,
 )
@@ -34,6 +36,7 @@ def evaluate(args):
     )
     metrics = BinaryProtocolMetrics(args.pixel_thresholds)
     fixed_counts = {'tp': 0, 'fp': 0, 'fn': 0}
+    crack_morphology = CrackMorphologyMetrics(threshold=args.val_threshold)
     predictions, masks, paths, anomalies = [], [], [], []
     for batch in tqdm(loader, desc=f'test {model_name}'):
         image = batch['img'].to(device, non_blocking=True)
@@ -48,6 +51,20 @@ def evaluate(args):
         masks.append(target[:, 0].cpu())
         paths.extend(batch['img_path'])
         anomalies.extend(batch['anomaly'].cpu().tolist())
+        image_path = str(batch['img_path'][0])
+        probability_array = probability[0, 0].cpu().numpy()
+        if int(batch['anomaly'][0]) == 0:
+            crack_morphology.update(
+                probability_array, np.zeros_like(probability_array, dtype=bool)
+            )
+        else:
+            class_masks, any_defect = decode_bridge_class_masks(image_path)
+            crack_mask = class_masks['Crack']
+            if crack_mask.any():
+                # Match diagnostic AP: other annotated defect pixels are ignored.
+                valid_probability = probability_array.copy()
+                valid_probability[any_defect & ~crack_mask] = 0.0
+                crack_morphology.update(valid_probability, crack_mask)
     result = metrics.compute()
     result['P-F1@val-threshold'] = f1_from_counts(fixed_counts)
     result['val_threshold'] = args.val_threshold
@@ -60,6 +77,10 @@ def evaluate(args):
     result['Macro-diagnostic-P-AP'] = float(np.mean([
         value['metrics_percent']['P-AP'] for value in per_defect.values()
     ]))
+    crack_structure = {
+        key: (100.0 * value if isinstance(value, float) else value)
+        for key, value in crack_morphology.report().items()
+    }
     report = {
         'protocol': {
             'task': 'Bridge2893 four-defect-union binary segmentation',
@@ -71,6 +92,7 @@ def evaluate(args):
         'model': model_name,
         'results_percent': result,
         'per_defect': per_defect,
+        'crack_structure_percent': crack_structure,
     }
     with open(os.path.join(args.output_dir, 'metrics.json'), 'w') as stream:
         json.dump(report, stream, indent=2)

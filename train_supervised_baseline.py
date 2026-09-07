@@ -22,9 +22,13 @@ def configure_optimizer(model, name, epochs, steps_per_epoch):
         optimizer = torch.optim.SGD(
             model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4
         )
-    else:
+    elif name == 'segformer_b1':
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=6e-5, betas=(0.9, 0.999), weight_decay=0.01
+        )
+    else:
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=1e-4, betas=(0.9, 0.999), weight_decay=1e-4
         )
     total_steps = max(epochs * steps_per_epoch, 1)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
@@ -133,7 +137,16 @@ def train(args):
                 'epoch': epoch, 'validation_metrics': val_metrics,
                 'pretraining': (
                     'torchvision ResNet50 IMAGENET1K_V2'
-                    if args.model == 'deeplabv3plus_r50' else 'nvidia/mit-b1 ImageNet'
+                    if args.model == 'deeplabv3plus_r50'
+                    else (
+                        'nvidia/mit-b1 ImageNet'
+                        if args.model == 'segformer_b1'
+                        else (
+                            'SMP ResNet34 ImageNet'
+                            if args.model == 'unetplusplus_r34'
+                            else 'timm hrnet_w18 ImageNet'
+                        )
+                    )
                 ),
             }, os.path.join(args.output_dir, 'best.pth'))
         state = {
@@ -170,7 +183,10 @@ def train(args):
 
 def parser():
     p = argparse.ArgumentParser()
-    p.add_argument('--model', choices=('deeplabv3plus_r50', 'segformer_b1'), required=True)
+    p.add_argument('--model', choices=(
+        'deeplabv3plus_r50', 'segformer_b1',
+        'unetplusplus_r34', 'hrnetv2_w18',
+    ), required=True)
     p.add_argument('--train_data_path', required=True)
     p.add_argument('--val_data_path', required=True)
     p.add_argument('--output_dir', required=True)

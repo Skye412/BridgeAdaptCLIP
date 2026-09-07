@@ -216,6 +216,8 @@ class CrackMorphologyMetrics:
             "Boundary-Precision": boundary_precision,
             "Boundary-Recall": boundary_recall,
             "clDice": cldice,
+            "Skeleton-Precision": topology_precision,
+            "Skeleton-Recall-Exact": topology_sensitivity,
             "Skeleton-Recall": self.gt_skeleton_tolerant_match / max(self.gt_skeleton, 1),
             "Connected-Component-Recall": self.recalled_components / max(self.components, 1),
             "support": {
