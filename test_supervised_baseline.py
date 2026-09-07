@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import time
 
 import numpy as np
 import torch
@@ -38,6 +39,10 @@ def evaluate(args):
     fixed_counts = {'tp': 0, 'fp': 0, 'fn': 0}
     crack_morphology = CrackMorphologyMetrics(threshold=args.val_threshold)
     predictions, masks, paths, anomalies = [], [], [], []
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+    started = time.perf_counter()
     for batch in tqdm(loader, desc=f'test {model_name}'):
         image = batch['img'].to(device, non_blocking=True)
         target = batch['native_mask'].to(device, non_blocking=True).unsqueeze(1)
@@ -65,6 +70,9 @@ def evaluate(args):
                 valid_probability = probability_array.copy()
                 valid_probability[any_defect & ~crack_mask] = 0.0
                 crack_morphology.update(valid_probability, crack_mask)
+    if device.type == 'cuda':
+        torch.cuda.synchronize(device)
+    inference_seconds = time.perf_counter() - started
     result = metrics.compute()
     result['P-F1@val-threshold'] = f1_from_counts(fixed_counts)
     result['val_threshold'] = args.val_threshold
@@ -93,6 +101,21 @@ def evaluate(args):
         'results_percent': result,
         'per_defect': per_defect,
         'crack_structure_percent': crack_structure,
+        'efficiency': {
+            'images': len(data),
+            'inference_wall_seconds': inference_seconds,
+            'images_per_second': len(data) / max(inference_seconds, 1e-12),
+            'peak_cuda_memory_bytes': (
+                torch.cuda.max_memory_allocated(device)
+                if device.type == 'cuda' else 0
+            ),
+            'parameters': sum(parameter.numel() for parameter in model.parameters()),
+            'trainable_parameters': sum(
+                parameter.numel() for parameter in model.parameters()
+                if parameter.requires_grad
+            ),
+            'batch_size': 1,
+        },
     }
     with open(os.path.join(args.output_dir, 'metrics.json'), 'w') as stream:
         json.dump(report, stream, indent=2)

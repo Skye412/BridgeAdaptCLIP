@@ -40,6 +40,16 @@ def test_hrnet_uses_resize_concat_head_when_timm_is_available():
     assert model.segmentation_head[0].in_channels == 270
 
 
+def test_unetplusplus_has_native_binary_output_when_smp_is_available():
+    import pytest
+    pytest.importorskip('segmentation_models_pytorch')
+    from adaptcliplib.supervised_baselines import UNetPlusPlusResNet34
+    model = UNetPlusPlusResNet34(pretrained=False).eval()
+    with torch.no_grad():
+        output = model(torch.randn(1, 3, 128, 128))
+    assert output.shape == (1, 1, 128, 128)
+
+
 def test_streaming_protocol_metrics_are_finite():
     metric = BinaryProtocolMetrics(bins=64)
     prediction = torch.tensor([[[[0.1, 0.9], [0.2, 0.8]]]])

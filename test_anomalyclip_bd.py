@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import time
 
 import numpy as np
 import torch
@@ -13,6 +14,8 @@ from tqdm import tqdm
 from dataset import BridgeDualResolutionDataset
 from tools import get_transform, setup_seed
 from tools.bridge_class_metrics import evaluate_bridge_classes
+from tools.bridge_masks import decode_bridge_class_masks
+from tools.crack_external import CrackMorphologyMetrics
 from tools.supervised_protocol import (
     BinaryProtocolMetrics, f1_from_counts, fixed_threshold_counts,
 )
@@ -47,6 +50,10 @@ def evaluate(args):
     metrics = BinaryProtocolMetrics(args.pixel_thresholds)
     counts = {'tp': 0, 'fp': 0, 'fn': 0}
     predictions, paths = [], []
+    crack_morphology = CrackMorphologyMetrics(threshold=args.val_threshold)
+    torch.cuda.reset_peak_memory_stats(device)
+    torch.cuda.synchronize(device)
+    started = time.perf_counter()
     for batch in tqdm(loader, desc='test AnomalyCLIP-BD'):
         images = batch['img'].to(device)
         image_logits, maps = features_and_maps(
@@ -73,6 +80,21 @@ def evaluate(args):
             counts[key] += current[key]
         predictions.append(probability[:,0].cpu())
         paths.extend(batch['img_path'])
+        image_path = str(batch['img_path'][0])
+        probability_array = probability[0, 0].cpu().numpy()
+        if int(batch['anomaly'][0]) == 0:
+            crack_morphology.update(
+                probability_array, np.zeros_like(probability_array, dtype=bool)
+            )
+        else:
+            class_masks, any_defect = decode_bridge_class_masks(image_path)
+            crack_mask = class_masks['Crack']
+            if crack_mask.any():
+                valid_probability = probability_array.copy()
+                valid_probability[any_defect & ~crack_mask] = 0.0
+                crack_morphology.update(valid_probability, crack_mask)
+    torch.cuda.synchronize(device)
+    inference_seconds = time.perf_counter() - started
     result = metrics.compute()
     result['P-F1@val-threshold'] = f1_from_counts(counts)
     result['val_threshold'] = args.val_threshold
@@ -86,6 +108,10 @@ def evaluate(args):
     result['Macro-diagnostic-P-AP'] = float(np.mean([
         value['metrics_percent']['P-AP'] for value in per_defect.values()
     ]))
+    crack_structure = {
+        key: (100.0 * value if isinstance(value, float) else value)
+        for key, value in crack_morphology.report().items()
+    }
     with open(os.path.join(args.output_dir, 'metrics.json'), 'w') as stream:
         json.dump({
             'model': 'AnomalyCLIP-BD',
@@ -96,6 +122,22 @@ def evaluate(args):
                 'checkpoint_selection': 'validation overall P-AP',
             },
             'results_percent': result, 'per_defect': per_defect,
+            'crack_structure_percent': crack_structure,
+            'efficiency': {
+                'images': len(data),
+                'inference_wall_seconds': inference_seconds,
+                'images_per_second': len(data) / max(inference_seconds, 1e-12),
+                'peak_cuda_memory_bytes': torch.cuda.max_memory_allocated(device),
+                'parameters': (
+                    sum(parameter.numel() for parameter in model.parameters())
+                    + sum(parameter.numel() for parameter in prompt.parameters())
+                ),
+                'trainable_parameters': sum(
+                    parameter.numel() for parameter in prompt.parameters()
+                    if parameter.requires_grad
+                ),
+                'batch_size': 1,
+            },
         }, stream, indent=2)
 
 
