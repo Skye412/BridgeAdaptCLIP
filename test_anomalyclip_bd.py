@@ -53,9 +53,12 @@ def evaluate(args):
     crack_morphology = CrackMorphologyMetrics(threshold=args.val_threshold)
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize(device)
-    started = time.perf_counter()
+    evaluation_started = time.perf_counter()
+    pipeline_inference_seconds = 0.0
     for batch in tqdm(loader, desc='test AnomalyCLIP-BD'):
         images = batch['img'].to(device)
+        torch.cuda.synchronize(device)
+        inference_started = time.perf_counter()
         image_logits, maps = features_and_maps(
             library, model, prompt, images, args.features_list, args.image_size
         )
@@ -70,6 +73,8 @@ def evaluate(args):
         probability = torch.nn.functional.interpolate(
             probability, size=(1024,1024), mode='bilinear', align_corners=False
         ).clamp(0,1)
+        torch.cuda.synchronize(device)
+        pipeline_inference_seconds += time.perf_counter() - inference_started
         target = batch['native_mask'].to(device).unsqueeze(1)
         metrics.update(
             probability, target, batch['anomaly'],
@@ -94,7 +99,7 @@ def evaluate(args):
                 valid_probability[any_defect & ~crack_mask] = 0.0
                 crack_morphology.update(valid_probability, crack_mask)
     torch.cuda.synchronize(device)
-    inference_seconds = time.perf_counter() - started
+    evaluation_seconds = time.perf_counter() - evaluation_started
     result = metrics.compute()
     result['P-F1@val-threshold'] = f1_from_counts(counts)
     result['val_threshold'] = args.val_threshold
@@ -125,8 +130,11 @@ def evaluate(args):
             'crack_structure_percent': crack_structure,
             'efficiency': {
                 'images': len(data),
-                'inference_wall_seconds': inference_seconds,
-                'images_per_second': len(data) / max(inference_seconds, 1e-12),
+                'pipeline_inference_seconds': pipeline_inference_seconds,
+                'pipeline_images_per_second': (
+                    len(data) / max(pipeline_inference_seconds, 1e-12)
+                ),
+                'evaluation_wall_seconds': evaluation_seconds,
                 'peak_cuda_memory_bytes': torch.cuda.max_memory_allocated(device),
                 'parameters': (
                     sum(parameter.numel() for parameter in model.parameters())

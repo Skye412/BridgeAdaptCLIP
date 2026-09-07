@@ -42,12 +42,19 @@ def evaluate(args):
     if device.type == 'cuda':
         torch.cuda.reset_peak_memory_stats(device)
         torch.cuda.synchronize(device)
-    started = time.perf_counter()
+    evaluation_started = time.perf_counter()
+    model_forward_seconds = 0.0
     for batch in tqdm(loader, desc=f'test {model_name}'):
         image = batch['img'].to(device, non_blocking=True)
         target = batch['native_mask'].to(device, non_blocking=True).unsqueeze(1)
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        forward_started = time.perf_counter()
         with torch.amp.autocast('cuda', enabled=amp):
             probability = torch.sigmoid(model(image).float())
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        model_forward_seconds += time.perf_counter() - forward_started
         metrics.update(probability, target, batch['anomaly'])
         counts = fixed_threshold_counts(probability, target, args.val_threshold)
         for key in fixed_counts:
@@ -72,7 +79,7 @@ def evaluate(args):
                 crack_morphology.update(valid_probability, crack_mask)
     if device.type == 'cuda':
         torch.cuda.synchronize(device)
-    inference_seconds = time.perf_counter() - started
+    evaluation_seconds = time.perf_counter() - evaluation_started
     result = metrics.compute()
     result['P-F1@val-threshold'] = f1_from_counts(fixed_counts)
     result['val_threshold'] = args.val_threshold
@@ -103,8 +110,9 @@ def evaluate(args):
         'crack_structure_percent': crack_structure,
         'efficiency': {
             'images': len(data),
-            'inference_wall_seconds': inference_seconds,
-            'images_per_second': len(data) / max(inference_seconds, 1e-12),
+            'model_forward_seconds': model_forward_seconds,
+            'model_images_per_second': len(data) / max(model_forward_seconds, 1e-12),
+            'evaluation_wall_seconds': evaluation_seconds,
             'peak_cuda_memory_bytes': (
                 torch.cuda.max_memory_allocated(device)
                 if device.type == 'cuda' else 0
