@@ -4,7 +4,7 @@ set -euo pipefail
 checkout="${CHECKOUT:-/home/skye/data/Skye/AdaptCLIP_paper_a55cfbf}"
 result_root="${RESULT_ROOT:-/home/skye/data/Skye/AdaptCLIP/results}"
 primary_root="${result_root}/paper_comparisons_ablations_a300db7"
-revision="$(git -C "${checkout}" rev-parse --short HEAD)"
+revision="${EXPERIMENT_REVISION:-a5ef5e0}"
 queue_root="${result_root}/paper_detail_baselines_${revision}"
 mkdir -p "${queue_root}/status"
 exec > >(tee -a "${queue_root}/queue.log") 2>&1

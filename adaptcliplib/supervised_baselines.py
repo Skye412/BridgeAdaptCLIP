@@ -144,7 +144,7 @@ class UNetPlusPlusResNet34(nn.Module):
             in_channels=3,
             classes=1,
             activation=None,
-            decoder_use_batchnorm=True,
+            decoder_use_norm='batchnorm',
         )
 
     def forward(self, image):
