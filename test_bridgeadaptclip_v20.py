@@ -40,19 +40,24 @@ def evaluate(args):
     row0_checkpoint = torch.load(args.row0_checkpoint_path, map_location='cpu')
     textual.load_state_dict(row0_checkpoint['textual_learner'])
     visual.load_state_dict(row0_checkpoint['visual_learner']); _freeze(textual); _freeze(visual)
-    fine_class = (
-        BridgeAdaptCLIPV21Fine
-        if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
-        else BridgeAdaptCLIPV12
-    )
-    fine_model = fine_class(
-        semantic_channels=768, fusion_channels=args.fusion_channels,
-        structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
-        structural_input_size=args.structural_input_size,
-        probability_epsilon=args.probability_epsilon,
-    )
-    fine_checkpoint = torch.load(args.fine_checkpoint_path, map_location='cpu')
-    fine_model.load_state_dict(fine_checkpoint[args.fine_checkpoint_state_key]); _freeze(fine_model)
+    fine_model = None
+    if args.fine_bypass == 'none':
+        if not args.fine_checkpoint_path:
+            raise ValueError('--fine_checkpoint_path is required without a fine bypass')
+        fine_class = (
+            BridgeAdaptCLIPV21Fine
+            if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
+            else BridgeAdaptCLIPV12
+        )
+        fine_model = fine_class(
+            semantic_channels=768, fusion_channels=args.fusion_channels,
+            structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
+            structural_input_size=args.structural_input_size,
+            probability_epsilon=args.probability_epsilon,
+        )
+        fine_checkpoint = torch.load(args.fine_checkpoint_path, map_location='cpu')
+        fine_model.load_state_dict(fine_checkpoint[args.fine_checkpoint_state_key])
+        _freeze(fine_model)
     broad_model = BridgeAdaptCLIPV20(
         joint_channels=args.fusion_channels, broad_channels=args.broad_channels,
         output_size=args.structural_input_size,
@@ -61,10 +66,15 @@ def evaluate(args):
     broad_model.load_state_dict(checkpoint[args.checkpoint_state_key]); _freeze(broad_model)
     if checkpoint.get('row0_checkpoint_sha256') != file_sha256(args.row0_checkpoint_path):
         raise ValueError('Row-0 checkpoint hash mismatch')
-    if checkpoint.get('fine_checkpoint_sha256') != file_sha256(args.fine_checkpoint_path):
-        raise ValueError('Fine checkpoint hash mismatch')
+    if args.fine_bypass == 'none':
+        if checkpoint.get('fine_checkpoint_sha256') != file_sha256(args.fine_checkpoint_path):
+            raise ValueError('Fine checkpoint hash mismatch')
+    elif checkpoint.get('architecture', {}).get('fine_bypass') != args.fine_bypass:
+        raise ValueError('Checkpoint was not trained with the requested fine bypass')
     clip_model.to(device); textual.to(device); visual.to(device)
-    fine_model.to(device); broad_model.to(device)
+    if fine_model is not None:
+        fine_model.to(device)
+    broad_model.to(device)
     textual.prepare_static_text_feature(clip_model)
     with torch.no_grad():
         prompts, tokens = textual()
@@ -94,7 +104,6 @@ def evaluate(args):
     amp_enabled = args.amp and device.type == 'cuda'
     for items in tqdm(loader):
         clip_image = items['img'].to(device, non_blocking=True)
-        structural = items['structural_img'].to(device, non_blocking=True)
         with torch.no_grad():
             image_features, patch_features = clip_model.encode_image(
                 clip_image, args.features_list, DPAM_layer=20
@@ -110,13 +119,31 @@ def evaluate(args):
                 smoothed, metric_resolution=args.metric_resolution, device=device
             )
             image_score = row0_image_score(gv, gt, smoothed)
+            if args.fine_bypass == 'row0_zero_feature':
+                row0_logits = torch.logit(row0_probability.clamp(
+                    args.probability_epsilon, 1.0 - args.probability_epsilon
+                ))
+                joint_size = args.structural_input_size // 4
+                fine_output = {
+                    'joint_feature': torch.zeros(
+                        row0_logits.shape[0], args.fusion_channels,
+                        joint_size, joint_size, device=device,
+                        dtype=row0_logits.dtype,
+                    ),
+                    'mask_logits': row0_logits,
+                }
+            else:
+                structural = items['structural_img'].to(device, non_blocking=True)
+                with torch.cuda.amp.autocast(enabled=amp_enabled):
+                    if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                        fine_output = fine_model(
+                            visual_patch, patch_features, row0_probability, structural
+                        )
+                    else:
+                        fine_output = fine_model(
+                            visual_patch, row0_probability, structural
+                        )
             with torch.cuda.amp.autocast(enabled=amp_enabled):
-                if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
-                    fine_output = fine_model(
-                        visual_patch, patch_features, row0_probability, structural
-                    )
-                else:
-                    fine_output = fine_model(visual_patch, row0_probability, structural)
                 output = broad_model(
                     fine_output['joint_feature'], fine_output['mask_logits'], row0_probability
                 )
@@ -222,7 +249,13 @@ def evaluate(args):
             'protocol_id':'bridge2893-eval-v2', 'model_name':args.model_name,
             'model_input_size':args.model_input_size, 'structural_input_size':args.structural_input_size,
             'metric_resolution':args.metric_resolution, 'reference_count':0,
-            'fine_base':f'frozen_{args.fine_checkpoint_state_key}',
+            'fine_base':(
+                f'frozen_{args.fine_checkpoint_state_key}'
+                if args.fine_bypass == 'none'
+                else 'row0_logits_zero_joint_feature'
+            ),
+            'fine_bypass':args.fine_bypass,
+            'esc_executed':args.fine_bypass == 'none',
             'fine_checkpoint_path':args.fine_checkpoint_path,
             'checkpoint_path':args.checkpoint_path, 'image_score_policy':'exact_frozen_row0',
             'prediction_type':'fine_logits_plus_non_positive_broad_correction',
@@ -237,8 +270,10 @@ def evaluate(args):
 
 def build_parser():
     p=argparse.ArgumentParser('BridgeAdaptCLIP-v2.0 evaluation')
-    for name in ('test_data_path','checkpoint_path','row0_checkpoint_path','fine_checkpoint_path','save_path'):
+    for name in ('test_data_path','checkpoint_path','row0_checkpoint_path','save_path'):
         p.add_argument('--'+name, required=True)
+    p.add_argument('--fine_checkpoint_path')
+    p.add_argument('--fine_bypass',choices=('none','row0_zero_feature'),default='none')
     p.add_argument('--model_name',default='BridgeAdaptCLIP-v2.0')
     p.add_argument('--checkpoint_state_key',default='bridgeadaptclip_v20')
     p.add_argument('--fine_checkpoint_state_key',default='bridgeadaptclip_v13')

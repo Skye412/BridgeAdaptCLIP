@@ -48,25 +48,32 @@ def train(args):
     _freeze(textual)
     _freeze(visual)
 
-    fine_class = (
-        BridgeAdaptCLIPV21Fine
-        if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
-        else BridgeAdaptCLIPV12
-    )
-    fine_model = fine_class(
-        semantic_channels=768, fusion_channels=args.fusion_channels,
-        structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
-        structural_input_size=args.structural_input_size,
-        probability_epsilon=args.probability_epsilon,
-    )
-    fine_checkpoint = torch.load(args.fine_checkpoint_path, map_location='cpu')
-    fine_model.load_state_dict(fine_checkpoint[args.fine_checkpoint_state_key])
-    _freeze(fine_model)
+    fine_model = None
+    fine_checkpoint = None
+    if args.fine_bypass == 'none':
+        if not args.fine_checkpoint_path:
+            raise ValueError('--fine_checkpoint_path is required without a fine bypass')
+        fine_class = (
+            BridgeAdaptCLIPV21Fine
+            if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine'
+            else BridgeAdaptCLIPV12
+        )
+        fine_model = fine_class(
+            semantic_channels=768, fusion_channels=args.fusion_channels,
+            structural_channels=args.structural_channels, strip_kernel=args.strip_kernel,
+            structural_input_size=args.structural_input_size,
+            probability_epsilon=args.probability_epsilon,
+        )
+        fine_checkpoint = torch.load(args.fine_checkpoint_path, map_location='cpu')
+        fine_model.load_state_dict(fine_checkpoint[args.fine_checkpoint_state_key])
+        _freeze(fine_model)
     broad_model = BridgeAdaptCLIPV20(
         joint_channels=args.fusion_channels, broad_channels=args.broad_channels,
         output_size=args.structural_input_size,
     ).to(device).train()
-    clip_model.to(device); textual.to(device); visual.to(device); fine_model.to(device)
+    clip_model.to(device); textual.to(device); visual.to(device)
+    if fine_model is not None:
+        fine_model.to(device)
     textual.prepare_static_text_feature(clip_model)
     with torch.no_grad():
         prompts, tokens = textual()
@@ -92,10 +99,13 @@ def train(args):
     amp_enabled = args.amp and device.type == 'cuda'
     scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
     row0_sha = file_sha256(args.row0_checkpoint_path)
-    fine_sha = file_sha256(args.fine_checkpoint_path)
+    fine_sha = (
+        file_sha256(args.fine_checkpoint_path) if args.fine_bypass == 'none' else None
+    )
     logger.info(
-        'frozen fine=%d; trainable broad=%d; row0_sha256=%s; fine_sha256=%s',
-        sum(p.numel() for p in fine_model.parameters()),
+        'fine_bypass=%s; frozen fine=%d; trainable broad=%d; row0_sha256=%s; fine_sha256=%s',
+        args.fine_bypass,
+        sum(p.numel() for p in fine_model.parameters()) if fine_model is not None else 0,
         sum(p.numel() for p in broad_model.parameters()), row0_sha, fine_sha,
     )
 
@@ -111,7 +121,6 @@ def train(args):
         optimizer.zero_grad(set_to_none=True)
         for batch_index, items in enumerate(tqdm(loader, desc=f'epoch {epoch}/{args.epochs}')):
             clip_image = items['img'].to(device, non_blocking=True)
-            structural = items['structural_img'].to(device, non_blocking=True)
             target = items['native_mask'].to(device, non_blocking=True).unsqueeze(1)
             with torch.no_grad():
                 image_features, patch_features = clip_model.encode_image(
@@ -127,13 +136,30 @@ def train(args):
                     smooth_row0_probability(visual_map, textual_map, sigma=args.sigma),
                     metric_resolution=args.structural_input_size, device=device,
                 )
-                with torch.cuda.amp.autocast(enabled=amp_enabled):
-                    if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
-                        fine_output = fine_model(
-                            visual_patch, patch_features, row0_probability, structural
-                        )
-                    else:
-                        fine_output = fine_model(visual_patch, row0_probability, structural)
+                if args.fine_bypass == 'row0_zero_feature':
+                    row0_logits = torch.logit(row0_probability.clamp(
+                        args.probability_epsilon, 1.0 - args.probability_epsilon
+                    ))
+                    joint_size = args.structural_input_size // 4
+                    fine_output = {
+                        'joint_feature': torch.zeros(
+                            row0_logits.shape[0], args.fusion_channels,
+                            joint_size, joint_size, device=device,
+                            dtype=row0_logits.dtype,
+                        ),
+                        'mask_logits': row0_logits,
+                    }
+                else:
+                    structural = items['structural_img'].to(device, non_blocking=True)
+                    with torch.cuda.amp.autocast(enabled=amp_enabled):
+                        if args.fine_checkpoint_state_key == 'bridgeadaptclip_v21_fine':
+                            fine_output = fine_model(
+                                visual_patch, patch_features, row0_probability, structural
+                            )
+                        else:
+                            fine_output = fine_model(
+                                visual_patch, row0_probability, structural
+                            )
             with torch.cuda.amp.autocast(enabled=amp_enabled):
                 output = broad_model(
                     fine_output['joint_feature'], fine_output['mask_logits'], row0_probability
@@ -184,11 +210,19 @@ def train(args):
         logger.info('epoch [%d/%d] %s', epoch, args.epochs, json.dumps(summary, sort_keys=True))
         checkpoint = {
             'epoch': epoch, 'config': vars(args), 'row0_checkpoint_sha256': row0_sha,
-            'fine_checkpoint_sha256': fine_sha, 'fine_checkpoint_epoch': fine_checkpoint.get('epoch'),
+            'fine_checkpoint_sha256': fine_sha,
+            'fine_checkpoint_epoch': (
+                fine_checkpoint.get('epoch') if fine_checkpoint is not None else None
+            ),
             'architecture': {
                 'model_name': args.model_name,
-                'fine_base': f'frozen {args.fine_checkpoint_state_key}',
-                'fusion': 'Z_final = Z_fine - sigmoid(A_b)*softplus(R_b)',
+                'fine_base': (
+                    f'frozen {args.fine_checkpoint_state_key}'
+                    if args.fine_bypass == 'none'
+                    else 'Row-0 logits plus zero F_joint; ESC not instantiated or executed'
+                ),
+                'fine_bypass': args.fine_bypass,
+                'fusion': 'Z_final = Z_base - sigmoid(A_b)*softplus(R_b)',
                 'broad_feature_size': args.structural_input_size // 8,
                 'broad_correction_constraint': 'non-positive',
             },
@@ -201,7 +235,10 @@ def train(args):
         json.dump({
             'model_name': args.model_name, 'optimizer': 'Adam',
             'optimizer_betas': [0.5, 0.999], 'learning_rate': args.learning_rate,
-            'fine_base_frozen': True, 'row0_checkpoint_sha256': row0_sha,
+            'fine_base_frozen': args.fine_bypass == 'none',
+            'fine_bypass': args.fine_bypass,
+            'esc_instantiated': args.fine_bypass == 'none',
+            'row0_checkpoint_sha256': row0_sha,
             'fine_checkpoint_sha256': fine_sha, 'loss_weights': {
                 'focal': 1.0, 'dice': 1.0,
                 'broad_fp_gate': args.broad_gate_loss_weight,
@@ -216,7 +253,10 @@ def build_parser():
     parser.add_argument('--train_data_path', required=True)
     parser.add_argument('--save_path', required=True)
     parser.add_argument('--row0_checkpoint_path', required=True)
-    parser.add_argument('--fine_checkpoint_path', required=True)
+    parser.add_argument('--fine_checkpoint_path')
+    parser.add_argument(
+        '--fine_bypass', choices=('none', 'row0_zero_feature'), default='none'
+    )
     parser.add_argument('--model_name', default='BridgeAdaptCLIP-v2.0')
     parser.add_argument('--checkpoint_state_key', default='bridgeadaptclip_v20')
     parser.add_argument('--fine_checkpoint_state_key', default='bridgeadaptclip_v13')

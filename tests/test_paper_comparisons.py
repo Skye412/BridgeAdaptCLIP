@@ -1,6 +1,6 @@
 import torch
 
-from adaptcliplib.bridgeadaptclip import BridgeAdaptCLIPV12
+from adaptcliplib.bridgeadaptclip import BridgeAdaptCLIPV12, BridgeAdaptCLIPV20
 from adaptcliplib.supervised_baselines import DeepLabV3PlusResNet50
 from tools.supervised_protocol import BinaryProtocolMetrics
 
@@ -60,3 +60,14 @@ def test_streaming_protocol_metrics_are_finite():
     result = metric.compute()
     assert result['P-AP'] > 99
     assert result['P-AUROC'] > 99
+
+
+def test_bsc_accepts_row0_zero_feature_bypass():
+    model = BridgeAdaptCLIPV20(joint_channels=16, broad_channels=16, output_size=64)
+    zero_joint = torch.zeros(2, 16, 16, 16)
+    row0_probability = torch.rand(2, 1, 64, 64).clamp(1e-6, 1 - 1e-6)
+    row0_logits = torch.logit(row0_probability)
+    output = model(zero_joint, row0_logits, row0_probability)
+    assert output['mask_logits'].shape == row0_logits.shape
+    assert torch.count_nonzero(zero_joint) == 0
+    assert torch.all(output['broad_correction'] <= 0)
