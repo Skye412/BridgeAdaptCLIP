@@ -196,6 +196,13 @@ def main(args):
     component_parameters = {
         name: parameter_count(module) for name, module in zip(names, modules)
     }
+    derclip_added = (
+        component_parameters['fine_module'] + component_parameters['broad_module']
+    )
+    task_specific = sum(
+        component_parameters[name]
+        for name in ('textual_adapter', 'visual_adapter', 'fine_module', 'broad_module')
+    )
     clip_transform, _ = get_transform(image_size=args.model_input_size)
     test_data = BridgeDualResolutionDataset(
         args.test_data_path, clip_transform=clip_transform,
@@ -212,6 +219,11 @@ def main(args):
         'parameters': {
             'components': component_parameters,
             'total_inference_parameters': sum(component_parameters.values()),
+            'task_specific_parameters_including_row0_adapters': task_specific,
+            'derclip_added_parameters_fine_plus_broad': derclip_added,
+            'maximum_simultaneously_trainable_derclip_parameters': max(
+                component_parameters['fine_module'], component_parameters['broad_module']
+            ),
             'trainable_parameters_final_v2_stage': component_parameters['broad_module'],
             'frozen_parameters_final_v2_stage': (
                 sum(component_parameters.values()) - component_parameters['broad_module']
